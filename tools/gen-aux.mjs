@@ -235,10 +235,13 @@ const TOC = [
 	["Part VI", "评价", "判断，非事实", [["20", "借鉴清单与失效条件", "哪些能直接抄，哪些抄了会疼，哪些赌注还没结算"]]],
 ];
 
+// 目录页只标例外：19 章里 17 章都是「已发布」，人人都有的徽章等于噪音，
+// 移动端还挤占标题。默认态不标，「部分落地 / 仅设计文档」才值得读者在目录页就警觉。
+// 章节页头部的徽章不受影响——那里有 status.json 的证据链（GATE 2）。
 const badge = (ch) => {
 	const s = status[`ch${ch}`];
-	if (!s) return "";
-	const cls = s.status === "已发布" ? "shipped" : s.status === "部分落地" ? "partial" : "paper";
+	if (!s || s.status === "已发布") return "";
+	const cls = s.status === "部分落地" ? "partial" : "paper";
 	return ` <span class="status ${cls}">${s.status}</span>`;
 };
 
