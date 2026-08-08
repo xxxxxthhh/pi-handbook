@@ -1,0 +1,140 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>00 导读 · Pi 源码解读手册</title>
+<meta name="description" content="怎么读这本书、实现状态标记体系、锚定版本、不覆盖什么">
+<link rel="icon" type="image/svg+xml" href="../assets/favicon.svg">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@500;700&family=Noto+Sans+SC:wght@400;500;700&family=IBM+Plex+Mono:wght@400;500&display=swap" rel="stylesheet" media="print" onload="this.media='all'">
+<noscript><link href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@500;700&family=Noto+Sans+SC:wght@400;500;700&family=IBM+Plex+Mono:wght@400;500&display=swap" rel="stylesheet"></noscript>
+<link rel="stylesheet" href="../assets/handbook.css">
+<script src="../assets/theme.js"></script>
+</head>
+<body>
+<button class="theme-toggle" type="button" aria-label="切换深色/浅色模式" title="切换深色/浅色模式">
+  <span class="sun" aria-hidden="true">☀️</span><span class="moon" aria-hidden="true">🌙</span>
+</button>
+<div class="wrap">
+<nav class="crumb"><a href="../index.html">← 目录</a> · <a href="../sources.html">溯源索引</a> · <a href="../drift.html">漂移记录</a></nav>
+
+<header class="ch">
+  <div class="bars" aria-hidden="true"><span class="l1"></span><span class="l2"></span><span class="l3"></span><span class="l4 f"></span></div>
+  <div class="kicker">Introduction</div>
+  <h1>00 导读
+    <span class="zh">这本书做了什么、没做什么、以及怎么核对它</span>
+  </h1>
+  <div class="meta">
+    <span>正文 <b>21 章</b></span>
+    <span>引用 <b>全部锚定到 <code>ac4ac9e</code></b></span>
+    <span>校验 <b>4 道门禁 + mutation test</b></span>
+  </div>
+</header>
+
+<section id="s1">
+  <div class="sec-tag"><span class="cell"></span><span class="lab">§1 为什么写这本</span></div>
+  <h2>上游已经有 32945 行 markdown 了</h2>
+
+<p><code>earendil-works/pi</code> 自带 97 个 markdown 文件、共 32945 行文档，写得比多数开源项目都好。所以本书<b>不复述文档</b>。它的全部价值来自三件文档做不到的事：</p>
+
+<ul>
+  <li><b>读代码而不是读 README。</b>每个关于行为的断言都锚定到 <code>path:line</code>，并且有校验器逐条核对该行的实际内容。</li>
+  <li><b>区分「已发布」与「设计文档」。</b>上游正在做一次 agent harness 重写。文档描述的系统和你机器上跑的系统<b>不是同一个</b>——本书为每章标注实现状态，并给出判定证据。</li>
+  <li><b>记录文档与代码的漂移。</b>一个 5565 commits / 286 位作者 / 32945 行自有文档的仓库，drift 必然存在，且没人写下来过。</li>
+</ul>
+
+<div class="callout">
+  <p><b>一句话预告全书最重要的发现：</b>那份 3437 行的 durable harness 设计文档描述的执行器，在锚定版本上<b>有 22 个方法直接抛错</b>，且没有任何生产代码路径构造它。真正在跑的是另一个循环。判定过程见 <a href="ch08.html">第 08 章</a>。</p>
+</div>
+
+</section>
+
+<section id="s2">
+  <div class="sec-tag"><span class="cell"></span><span class="lab">§2 实现状态标记</span></div>
+  <h2>三种徽章，每章头部一个</h2>
+
+<div class="tbl-scroll"><table><thead><tr><th>徽章</th><th>含义</th><th>判定方式</th></tr></thead><tbody>
+<tr><td><span class="status shipped">已发布</span></td><td>该章描述的代码在 HEAD 上被 <code>packages/coding-agent</code> 实际执行</td><td>从生产入口的构造点追调用链</td></tr>
+<tr><td><span class="status partial">部分落地</span></td><td>类型/接口/测试已存在，但主要操作路径仍抛错或未接线</td><td>指出抛错点或未接线证据</td></tr>
+<tr><td><span class="status paper">仅设计文档</span></td><td>只存在于 <code>docs/*.md</code>，代码中无对应实现</td><td>grep 无实现</td></tr>
+</tbody></table></div>
+
+<p>每个徽章在 <code>data/status.json</code> 里有对应条目，含 <code>path:line</code> 证据；校验器会核对<b>页面徽章文案与该文件一致</b>，且<b>每条证据指向的行确实包含预期内容</b>。徽章不是印象，是可核对的判定。</p>
+
+</section>
+
+<section id="s3">
+  <div class="sec-tag"><span class="cell"></span><span class="lab">§3 怎么核对本书</span></div>
+  <h2>锚定版本</h2>
+
+<div class="tpl">
+  <div class="tpl-head"><span class="path">本书锚定的上游版本</span><span class="lines literal">固定不变</span></div>
+  <pre><code>repo:  https://github.com/earendil-works/pi
+SHA:   ac4ac9eaf69f2b01ca3af984a5c48f3b99b84278
+date:  2026-08-07
+速度:  约 428 commits/月</code></pre>
+  <div class="tpl-foot">以每月 428 次提交的速度，<b>不锚定 SHA 的行号引用在一周内就会失效</b>。本书全部 <code>↪ path:line</code> 链接都指向该 SHA 的 blob，点开即是当时的原文。</div>
+</div>
+
+<h2>三张辅助页</h2>
+
+<ul>
+  <li><a href="../sources.html">溯源索引</a>——全站每条引用的汇总表，按文件分组。想批量核对从这里开始。</li>
+  <li><a href="../drift.html">漂移记录</a>——文档与代码不一致之处，每条<b>双向举证</b>（文档侧 + 代码侧各一个 <code>path:line</code>）。</li>
+  <li><a href="../glossary.html">术语表</a>——英文术语 → 中文解释 → 首次出现章节。</li>
+</ul>
+
+<h2>两种代码块，标签不同</h2>
+
+<div class="tbl-scroll"><table><thead><tr><th>标签</th><th>含义</th></tr></thead><tbody>
+<tr><td><span class="lines literal" style="font-family:var(--mono);font-size:12px">原文 L582–L584</span></td><td>逐字摘自该行区间。可能并置多个不连续区间（会写明）</td></tr>
+<tr><td><span class="lines rewritten" style="font-family:var(--mono);font-size:12px">改写自 L167–L274</span></td><td>为讲解压缩过：合并行、省略参数。<b>脚注会说明改了什么</b></td></tr>
+</tbody></table></div>
+
+<p>这个区分是硬性的。本书的前提是「我们读代码」，把改写过的块标成「节选」是唯一不可犯的错。</p>
+
+</section>
+
+<section id="s4">
+  <div class="sec-tag"><span class="cell"></span><span class="lab">§4 不覆盖什么</span></div>
+
+<ul>
+  <li><b>pi 的使用教程。</b>上游 <code>docs/quickstart.md</code> 已足够，本书不重复。</li>
+  <li><b>逐个 provider 的接入细节。</b><a href="ch09.html">第 09 章</a>只讲抽象的形状与代价，不讲 39 家各自怎么接。</li>
+  <li><b>TUI 的完整 API 与渲染正确性审计。</b><a href="ch11.html">第 11 章</a>讲为什么自研，不讲怎么用。</li>
+  <li><b>写扩展的 step-by-step。</b><a href="ch12.html">第 12 章</a>讲能改什么、边界在哪，教程看上游 <code>docs/extensions.md</code>。</li>
+  <li><b>端到端行为验证。</b>本书读代码，没有运行 pi 做行为观察。完整的自我边界见 <a href="ch20.html">第 20 章</a> §4。</li>
+</ul>
+
+</section>
+
+<section id="s5">
+  <div class="sec-tag"><span class="cell"></span><span class="lab">§5 怎么读</span></div>
+
+<div class="tbl-scroll"><table><thead><tr><th>你是…</th><th>建议路线</th></tr></thead><tbody>
+<tr><td>想造自己的 agent harness</td><td><a href="ch03.html">03</a> → <a href="ch04.html">04</a> → <a href="ch05.html">05</a> → <a href="ch06.html">06</a> → <a href="ch07.html">07</a> → <a href="ch20.html">20</a></td></tr>
+<tr><td>在评估要不要依赖 pi</td><td><a href="ch08.html">08</a>（实现状态）→ <a href="ch15.html">15</a>（安全模型）→ <a href="ch20.html">20</a> §4（未结算的赌注）</td></tr>
+<tr><td>关心 agent 时代的 OSS 治理</td><td><a href="ch17.html">17</a> → <a href="ch18.html">18</a> → <a href="ch19.html">19</a></td></tr>
+<tr><td>只有 20 分钟</td><td><a href="ch20.html">第 20 章</a>，然后按它的交叉引用回头看</td></tr>
+</tbody></table></div>
+
+<p>每章的 <b>§1 一句话心智模型</b> 都是自足的——只读全书 21 个 <code>§1</code>，也能得到一幅完整但粗颗粒的图。</p>
+
+</section>
+
+<div class="next">
+  <a class="disabled">（本书开头）</a>
+  <a href="ch01.html">01 仓库全景 →</a>
+</div>
+
+<div class="anchor-foot">
+基于 <a href="https://github.com/earendil-works/pi/tree/ac4ac9eaf69f2b01ca3af984a5c48f3b99b84278">earendil-works/pi @ <code>ac4ac9e</code></a>（2026-08-07 快照）。<br>
+本书与 pi 项目无关联，是独立的第三方解读。
+</div>
+
+</div>
+<script src="../assets/quiz.js" defer></script>
+</body>
+</html>

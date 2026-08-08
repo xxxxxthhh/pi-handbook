@@ -1,0 +1,67 @@
+{
+  "_note": "文档与代码的漂移记录。SKELETON §7：只收可双向举证的条目——文档侧与代码侧都要有 path:line。写作过程中随手记录，不要留到最后补。",
+  "_pinned_sha": "ac4ac9eaf69f2b01ca3af984a5c48f3b99b84278",
+
+  "entries": [
+    {
+      "id": "d1",
+      "title": "README 的 Low-Level API 示例掩盖了 agentLoopContinue 会就地修改调用方数组",
+      "found_in_chapter": "ch03",
+      "severity": "中",
+      "doc_side": {
+        "path": "packages/agent/README.md",
+        "line": 482,
+        "expect": "const context: AgentContext = {",
+        "quote": "For direct control without the Agent class",
+        "summary": "示例构造一个 context 对象，先后喂给 agentLoop() 和 agentLoopContinue()，未提两者对 messages 数组的处理不同"
+      },
+      "code_side": {
+        "path": "packages/agent/src/agent-loop.ts",
+        "line": 136,
+        "expect": "const currentContext: AgentContext = { ...context };",
+        "summary": "runAgentLoopContinue 浅拷贝 context，messages 仍是调用方那个数组的引用；循环全程 push 进去。runAgentLoop 则在 L104 新建数组，调用方数组不受影响。"
+      },
+      "impact": "照 README 示例写的低层调用方，其 context.messages 会在 agentLoopContinue 之后被追加了整轮消息，而 agentLoop 之后不会。同一个对象、两个入口、两种语义，且签名看不出来。Agent 类使用者不受影响（agent.ts:437 每次 slice 快照）。"
+    },
+    {
+      "id": "d2",
+      "title": "security.md 的 Security Policy 链接仍指向旧仓名 pi-mono",
+      "found_in_chapter": "ch15",
+      "severity": "低",
+      "doc_side": {
+        "path": "packages/coding-agent/docs/security.md",
+        "line": 57,
+        "expect": "earendil-works/pi-mono/blob/main/SECURITY.md",
+        "quote": "follow the repository Security Policy",
+        "summary": "链接写死 earendil-works/pi-mono"
+      },
+      "code_side": {
+        "path": "README.md",
+        "line": 2,
+        "expect": "https://pi.dev",
+        "summary": "仓库已更名为 earendil-works/pi；GitHub 对 pi-mono 返回 301 重定向到 pi（curl -I 实测）。仓库内多处 markdown 仍残留 pi-mono 链接。"
+      },
+      "impact": "链接目前仍可达（靠 GitHub 的重定向）。风险在于重定向是 GitHub 的服务承诺而非仓库自身保证：若日后有人注册 earendil-works/pi-mono，这些链接会静默指向他人仓库。安全策略链接尤其不该依赖重定向。"
+    },
+    {
+      "id": "d3",
+      "title": "compaction 存在两份独立实现，文档只描述其中一份",
+      "found_in_chapter": "ch06",
+      "severity": "高",
+      "doc_side": {
+        "path": "packages/coding-agent/docs/compaction.md",
+        "line": 6,
+        "expect": "packages/coding-agent/src/core/compaction/compaction.ts",
+        "quote": "Source files",
+        "summary": "文档的 Source files 一节只列 packages/coding-agent/src/core/compaction/*，读者会认为那是唯一实现"
+      },
+      "code_side": {
+        "path": "packages/agent/src/index.ts",
+        "line": 75,
+        "expect": "} from \"./harness/compaction/compaction.ts\";",
+        "summary": "packages/agent 另有一份 harness/compaction/compaction.ts（848 行），并从 @earendil-works/pi-agent-core 的公开 API 导出 compact / prepareCompaction / shouldCompact / findCutPoint 等同名函数。两份文件 diff 达 880 行，导出函数名仅一处不同（completeSummarization vs completeSimpleWithRetries）。coding-agent CLI 用的是自己那份（core/compaction/index.ts），并不消费 agent 包的那份。"
+      },
+      "impact": "同一组函数名存在于两个已发布的 npm 包中，实现独立演进。按文档读源码的人看到的是 CLI 那份；用 @earendil-works/pi-agent-core 写代码的人调到的是另一份。文档没有任何地方提示这种分叉。这是 harness-v2 迁移期的中间态，但对库使用者是当下的事实。"
+    }
+  ]
+}

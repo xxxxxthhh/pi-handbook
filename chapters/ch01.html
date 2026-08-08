@@ -1,0 +1,203 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>01 仓库全景 · Pi 源码解读手册</title>
+<meta name="description" content="10 个包的职责与依赖方向；一年 5565 commits 的形状告诉你什么">
+<link rel="icon" type="image/svg+xml" href="../assets/favicon.svg">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@500;700&family=Noto+Sans+SC:wght@400;500;700&family=IBM+Plex+Mono:wght@400;500&display=swap" rel="stylesheet" media="print" onload="this.media='all'">
+<noscript><link href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@500;700&family=Noto+Sans+SC:wght@400;500;700&family=IBM+Plex+Mono:wght@400;500&display=swap" rel="stylesheet"></noscript>
+<link rel="stylesheet" href="../assets/handbook.css">
+<script src="../assets/theme.js"></script>
+</head>
+<body>
+<button class="theme-toggle" type="button" aria-label="切换深色/浅色模式" title="切换深色/浅色模式">
+  <span class="sun" aria-hidden="true">☀️</span><span class="moon" aria-hidden="true">🌙</span>
+</button>
+<div class="wrap">
+<nav class="crumb"><a href="../index.html">← 目录</a> · <a href="../sources.html">溯源索引</a> · <a href="../drift.html">漂移记录</a></nav>
+
+<header class="ch">
+  <div class="bars" aria-hidden="true"><span class="l1"></span><span class="l2"></span><span class="l3"></span><span class="l4 f"></span></div>
+  <div class="kicker">Part I · The Map</div>
+  <h1>01 仓库全景
+    <span class="zh">10 个包、25 万行、一年、286 位署名作者</span>
+  </h1>
+  <div class="meta">
+    <span class="status shipped">已发布</span>
+    <span>TS 代码 <b>250858 行</b></span>
+    <span>提交 <b>5565</b></span>
+    <span>起始 <b>2025-08-09</b></span>
+  </div>
+</header>
+
+<section id="s1">
+  <div class="sec-tag"><span class="cell"></span><span class="lab">§1 Mental Model 一句话心智模型</span></div>
+  <h2>先记住这一句</h2>
+
+<div class="oneliner"><b>pi 是一个「三层核心 + 一堆试验性外围」的仓库：<code>ai</code> 管 provider，<code>agent</code> 管循环，<code>coding-agent</code> 管产品——这三个包占了 81% 的代码。其余七个包加起来不到两成，且多数标着 experimental。</b></div>
+
+<p>看规模分布比看包名更快理解一个仓库的重心：</p>
+
+<div class="tbl-scroll"><table><thead><tr><th>包</th><th>TS 行数</th><th>职责</th></tr></thead><tbody>
+<tr><td><code>coding-agent</code></td><td><b>123797</b></td><td>CLI 产品本体：工具、扩展、交互模式、会话管理</td></tr>
+<tr><td><code>ai</code></td><td><b>58449</b></td><td>统一多 provider 的 LLM API</td></tr>
+<tr><td><code>tui</code></td><td><b>32374</b></td><td>自研终端 UI 库，差分渲染</td></tr>
+<tr><td><code>agent</code></td><td><b>21053</b></td><td>agent 循环、工具执行、会话存储、harness v2</td></tr>
+<tr><td><code>session-backends</code></td><td>4039</td><td>SQLite 后端（独立成包）</td></tr>
+<tr><td><code>server</code></td><td>3761</td><td>会话服务端（experimental）</td></tr>
+<tr><td><code>client</code></td><td>2472</td><td>客户端</td></tr>
+<tr><td><code>protocol</code></td><td>1961</td><td>线上协议（CBOR 编解码 + framing）</td></tr>
+<tr><td><code>evals</code></td><td>1774</td><td>评测框架</td></tr>
+<tr><td><code>telemetry</code></td><td>1178</td><td>厂商中立的 telemetry 契约</td></tr>
+</tbody></table></div>
+
+<p class="quiz-note">行数由 <code>tools/stats.sh</code> 从锚定 SHA 的工作树程序化统计（含测试与生成文件），非手写。</p>
+
+</section>
+
+<section id="s2">
+  <div class="sec-tag"><span class="cell"></span><span class="lab">§2 Evidence 代码实证</span></div>
+  <h2>依赖方向：一条干净的单向链</h2>
+
+<div class="tpl">
+  <div class="tpl-head"><span class="path">各包 package.json 的 @earendil-works/* 依赖</span><span class="lines rewritten">从 package.json 提取，非源码</span></div>
+  <pre><code>telemetry  → （无内部依赖）
+tui        → （无内部依赖）
+protocol   → （无内部依赖）
+evals      → （无内部依赖）
+
+ai         → telemetry
+agent      → ai, telemetry
+client     → protocol
+server     → ai, protocol
+<span class="cm bone">coding-agent → agent, ai, client, protocol, tui</span>  ← 唯一的汇聚点</code></pre>
+  <div class="tpl-foot">没有环。<code>tui</code> 完全独立于 agent 逻辑——<b>它是一个可以单独拿走用的终端 UI 库</b>，不知道 LLM 的存在。</div>
+</div>
+
+<p>这张图里最值得注意的是 <b><code>agent</code> 不依赖 <code>tui</code>，<code>tui</code> 也不依赖任何东西</b>。渲染与执行彻底分离，是 headless 模式（<a href="ch14.html">第 14 章</a>）能存在的结构前提。</p>
+
+<h2>一年的提交形状</h2>
+
+<div class="stats">
+  <div class="stat"><div class="n">5565</div><div class="l">提交总数</div></div>
+  <div class="stat"><div class="n">286</div><div class="l">署名作者</div></div>
+  <div class="stat"><div class="n">428</div><div class="l">月均提交</div></div>
+  <div class="stat"><div class="n">13</div><div class="l">活跃月份</div></div>
+</div>
+
+<p>作者分布是典型的「一个主力 + 一圈卫星」：Mario Zechner 3513 次提交（63%），Armin Ronacher 512 次，其后是 github-actions[bot] 与一串三位数以下的贡献者。<b>286 位作者里，绝大多数只提交过个位数。</b></p>
+
+<p>把这个分布和 <a href="ch18.html">第 18 章</a>的贡献者门禁放在一起看才完整：240 个已批准账号，286 位历史作者——<b>门禁不是把人挡在外面，而是把「随手扔一个 issue」和「真的来做事」分开。</b></p>
+
+<h2>一个不在仓库里的东西</h2>
+
+<p>provider 的模型元数据<b>不在 git 里</b>：</p>
+
+<div class="tpl">
+  <div class="tpl-head"><span class="path">.gitignore</span><span class="lines literal">原文 L11</span></div>
+  <pre><code>packages/ai/src/providers/data/</code></pre>
+  <div class="tpl-foot">39 个 provider 的模型清单是 <b>build 时从上游目录拉取</b>的产物。<a class="src" href="https://github.com/earendil-works/pi/blob/ac4ac9eaf69f2b01ca3af984a5c48f3b99b84278/.gitignore#L11" data-expect="packages/ai/src/providers/data/">.gitignore:11</a></div>
+</div>
+
+<p>所以 <code>npm run build</code> 的注释写的是「先刷新模型数据，再构建全部包」，另有一个 <code>build:offline</code> 用已有数据、不联网。<a class="src" href="https://github.com/earendil-works/pi/blob/ac4ac9eaf69f2b01ca3af984a5c48f3b99b84278/README.md#L56" data-expect="npm run build         # Refresh model data, then build all packages">README.md:56–57</a> 完整含义见 <a href="ch09.html">第 09 章</a>。</p>
+
+</section>
+
+<section id="s3">
+  <div class="sec-tag"><span class="cell"></span><span class="lab">§3 Design 设计动机与权衡</span></div>
+  <h2>为什么 coding-agent 这么大</h2>
+
+<p>12 万行里装的是：7 个内建工具、扩展系统、交互模式的全部 UI 组件、会话管理、设置系统、主题、键位、RPC/JSON 模式、导出 HTML……换句话说，<b>凡是「产品决策」都在这一层</b>。</p>
+
+<p>这与 <code>CONTRIBUTING.md</code> 的声明是一致的：<b>核心要最小</b>，不属于核心的应该做成扩展。<a class="src" href="https://github.com/earendil-works/pi/blob/ac4ac9eaf69f2b01ca3af984a5c48f3b99b84278/CONTRIBUTING.md#L9" data-expect="If your feature does not belong in the core, it should be an extension.">CONTRIBUTING.md:9</a> 但要注意「核心」在这句话里指的是 <code>packages/agent</code>（2 万行），不是 <code>coding-agent</code>。<b>coding-agent 本身不受这条约束</b>——它是产品。</p>
+
+<h2>自研 TUI 这个决定</h2>
+
+<p>3.2 万行手写一个终端 UI 库，而不是用 Ink（React for CLI）或 blessed。代价是显然的；收益要到 <a href="ch11.html">第 11 章</a>才说得清。这里先记一个事实：<b>tui 包零内部依赖，也不依赖 React</b>——它是这个仓库里最容易被单独复用的部分。</p>
+
+<h2>experimental 的自我标注</h2>
+
+<p><code>server</code> 包的 README 第一句就是：<b>Experimental. 本包处于活跃开发中，可能变更或移除，恕不另行通知；API 与行为尚不稳定。</b><a class="src" href="https://github.com/earendil-works/pi/blob/ac4ac9eaf69f2b01ca3af984a5c48f3b99b84278/packages/server/README.md#L3" data-expect="Experimental. This package is under active development and may change or be removed without notice.">server/README.md:3</a></p>
+
+<p>把稳定性承诺写在 README 第一行，比藏在版本号里诚实。对照 <a href="ch07.html">第 07 章</a>提到的「唯一兼容承诺」，这是同一种做法：<b>把变更自由度显式声明出来，而不是靠 semver 暗示。</b></p>
+
+</section>
+
+<section id="s4">
+  <div class="sec-tag"><span class="cell"></span><span class="lab">§4 Limits 边界与失效条件</span></div>
+
+<ul>
+  <li><b>行数统计包含测试与生成文件。</b><code>tools/stats.sh</code> 统计的是 <code>packages/*/</code> 下全部 <code>.ts</code>/<code>.tsx</code>，不区分 src 与 test。真实的「产品代码」比表里的数字小。</li>
+  <li><b>286 位作者是按署名去重的。</b>同一个人用多个 email 会被合并，但不同人重名不会被拆开。这是个近似值。</li>
+  <li><b>月均 428 提交是简单平均。</b>首尾月份不完整，且 2026-01 单月有 1224 次提交（明显的异常高峰），平均值掩盖了这种波动。</li>
+  <li><b>依赖图只看了 <code>dependencies</code> 与 <code>peerDependencies</code>。</b><code>devDependencies</code> 里的内部依赖未计入，所以实际的构建期耦合可能比图上更多。</li>
+</ul>
+
+</section>
+
+<section id="s5">
+  <div class="sec-tag"><span class="cell"></span><span class="lab">§5 Takeaway 拿走什么</span></div>
+
+<ul class="takeaway">
+  <li><b>读一个陌生 monorepo，先画依赖方向图和行数分布，再读代码。</b>两条信息就能定位重心和分层，比读 README 快。
+    <span class="cond">适用条件：包数量 &gt; 3。<b>单包仓库直接读入口。</b></span></li>
+  <li><b>把稳定性承诺写在 README 第一行。</b>「Experimental，可能移除」一句话省掉所有关于 semver 的争论。
+    <span class="cond">适用条件：你发布了尚未稳定的包。<b>比不发布或藏在 0.x 版本号里都好。</b></span></li>
+  <li><b>渲染层零依赖，是 headless 能力的结构前提。</b>如果你的 UI 库反向依赖了业务逻辑，无头模式就只能靠 mock 拼出来。
+    <span class="cond">适用条件：你需要同时支持 TUI / API / 服务端。</span></li>
+</ul>
+
+</section>
+
+
+<section id="quiz">
+  <div class="sec-tag"><span class="cell"></span><span class="lab">§ Self-check 自测</span></div>
+  <h2>给场景，判断 pi 会怎么做</h2>
+
+<div class="quiz">
+
+<div class="q" data-answer="c">
+  <p class="qprompt"><span class="qtype">场景</span>你想拿 pi 仓库里的一个包单独做自己的终端应用，且不想拖进任何 LLM 相关依赖。哪个包能直接拿走？</p>
+  <div class="opts">
+    <button class="opt" type="button" data-ch="a"><code>coding-agent</code>——功能最全</button>
+    <button class="opt" type="button" data-ch="b"><code>agent</code>——核心最小</button>
+    <button class="opt" type="button" data-ch="c"><code>tui</code>——零内部依赖，不知道 LLM 的存在</button>
+  </div>
+  <details><summary>看答案</summary><div class="answer">
+    <p><b>C。</b>依赖图里 <code>tui</code> 没有任何 <code>@earendil-works/*</code> 依赖，也不依赖 React；<code>agent</code> 依赖 <code>ai</code> 和 <code>telemetry</code>，<code>coding-agent</code> 是全图唯一的汇聚点。</p>
+  </div></details>
+</div>
+
+<div class="q" data-answer="b">
+  <p class="qprompt"><span class="qtype">场景</span>你 clone 仓库后在断网环境执行 <code>npm run build</code>，会发生什么？</p>
+  <div class="opts">
+    <button class="opt" type="button" data-ch="a">正常构建——git 里有全部所需文件</button>
+    <button class="opt" type="button" data-ch="b">失败——默认 build 会先联网刷新模型数据；离线要用 <code>build:offline</code></button>
+    <button class="opt" type="button" data-ch="c">跳过模型数据继续构建</button>
+  </div>
+  <details><summary>看答案</summary><div class="answer">
+    <p><b>B。</b>39 个 provider 的模型清单在 gitignore 掉的 <code>data/</code> 目录里，<a class="src" href="https://github.com/earendil-works/pi/blob/ac4ac9eaf69f2b01ca3af984a5c48f3b99b84278/.gitignore#L11" data-expect="packages/ai/src/providers/data/">.gitignore:11</a> 默认 build 第一步就是联网刷新它。<a class="src" href="https://github.com/earendil-works/pi/blob/ac4ac9eaf69f2b01ca3af984a5c48f3b99b84278/README.md#L56" data-expect="npm run build         # Refresh model data, then build all packages">README.md:56</a></p>
+  </div></details>
+</div>
+
+</div>
+</section>
+
+<div class="next">
+  <a href="ch00.html">← 00 导读</a>
+  <a href="ch02.html">02 三层边界 →</a>
+</div>
+
+<div class="anchor-foot">
+基于 <a href="https://github.com/earendil-works/pi/tree/ac4ac9eaf69f2b01ca3af984a5c48f3b99b84278">earendil-works/pi @ <code>ac4ac9e</code></a>（2026-08-07 快照）。<br>
+本页全部数字由 <code>tools/stats.sh</code> 程序化生成，未手写。
+</div>
+
+</div>
+<script src="../assets/quiz.js" defer></script>
+</body>
+</html>

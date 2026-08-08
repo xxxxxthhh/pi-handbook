@@ -1,0 +1,195 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>16 供应链硬化 · Pi 源码解读手册</title>
+<meta name="description" content="精确锁版本、min-release-age、shrinkwrap、OIDC trusted publishing 的完整链条">
+<link rel="icon" type="image/svg+xml" href="../assets/favicon.svg">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@500;700&family=Noto+Sans+SC:wght@400;500;700&family=IBM+Plex+Mono:wght@400;500&display=swap" rel="stylesheet" media="print" onload="this.media='all'">
+<noscript><link href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@500;700&family=Noto+Sans+SC:wght@400;500;700&family=IBM+Plex+Mono:wght@400;500&display=swap" rel="stylesheet"></noscript>
+<link rel="stylesheet" href="../assets/handbook.css">
+<script src="../assets/theme.js"></script>
+</head>
+<body>
+<button class="theme-toggle" type="button" aria-label="切换深色/浅色模式" title="切换深色/浅色模式">
+  <span class="sun" aria-hidden="true">☀️</span><span class="moon" aria-hidden="true">🌙</span>
+</button>
+<div class="wrap">
+<nav class="crumb"><a href="../index.html">← 目录</a> · <a href="../sources.html">溯源索引</a> · <a href="../drift.html">漂移记录</a></nav>
+
+<header class="ch">
+  <div class="bars" aria-hidden="true"><span class="l1"></span><span class="l2"></span><span class="l3"></span><span class="l4 f"></span></div>
+  <div class="kicker">Part V · Engineering &amp; Governance</div>
+  <h1>16 供应链硬化
+    <span class="zh">把依赖变更当代码评审：一条从 .npmrc 到 OIDC 的完整链</span>
+  </h1>
+  <div class="meta">
+    <span class="status shipped">已发布</span>
+    <span>生命周期脚本白名单 <b>2 条</b></span>
+    <span>同日发布延迟 <b>2 天</b></span>
+  </div>
+</header>
+
+<section id="s1">
+  <div class="sec-tag"><span class="cell"></span><span class="lab">§1 Mental Model 一句话心智模型</span></div>
+  <h2>先记住这一句</h2>
+
+<div class="oneliner"><b>pi 的供应链策略是一句话推出来的：<em>「我们把 npm 依赖变更当作需要评审的代码变更。」</em>——一旦接受这个前提，「锁精确版本」「拒绝同日发布」「生命周期脚本要白名单」全都是必然推论，而不是各自独立的安全措施。</b></p></div>
+
+<p>这一章值得读的地方不是清单本身，而是<b>清单的完整性</b>。多数项目做前两条就停了；pi 把链条一直拉到「发布时不用本地 npm token」。有意思的是，一个明确拒绝做运行时权限系统的项目（<a href="ch15.html">第 15 章</a>），在供应链上却是全书最谨慎的。</p>
+
+<p>这两件事并不矛盾，反而互相解释：<b>pi 认为真正的边界要建在能真正守住的地方。</b>进程内沙箱守不住，所以不做；依赖引入的那一刻能守住，所以守得很紧。</p>
+
+</section>
+
+<section id="s2">
+  <div class="sec-tag"><span class="cell"></span><span class="lab">§2 Evidence 代码实证</span></div>
+  <h2>整条链</h2>
+
+<div class="tbl-scroll"><table><thead><tr><th>环节</th><th>机制</th><th>证据</th></tr></thead><tbody>
+<tr><td>写入依赖</td><td>直接外部依赖锁精确版本；工作区内部包保留范围</td><td><a class="src" href="https://github.com/earendil-works/pi/blob/ac4ac9eaf69f2b01ca3af984a5c48f3b99b84278/README.md#L80" data-expect="Direct external dependencies are pinned to exact versions.">README.md:80</a></td></tr>
+<tr><td>解析时</td><td><code>save-exact=true</code> + <code>min-release-age=2</code></td><td><a class="src" href="https://github.com/earendil-works/pi/blob/ac4ac9eaf69f2b01ca3af984a5c48f3b99b84278/.npmrc#L2" data-expect="min-release-age=2">.npmrc:2</a></td></tr>
+<tr><td>提交时</td><td>pre-commit 拦截 lockfile 提交，除非显式设环境变量</td><td><a class="src" href="https://github.com/earendil-works/pi/blob/ac4ac9eaf69f2b01ca3af984a5c48f3b99b84278/scripts/check-lockfile-commit.mjs#L5" data-expect="const allowValue = process.env.PI_ALLOW_LOCKFILE_CHANGE;">check-lockfile-commit.mjs:5</a></td></tr>
+<tr><td>检查时</td><td><code>npm run check</code> 串了 5 道自定义门禁</td><td><a class="src" href="https://github.com/earendil-works/pi/blob/ac4ac9eaf69f2b01ca3af984a5c48f3b99b84278/package.json#L18" data-expect="npm run check:pinned-deps">package.json:18</a></td></tr>
+<tr><td>发布物</td><td>CLI 包内附 <code>npm-shrinkwrap.json</code>，钉死传递依赖</td><td><a class="src" href="https://github.com/earendil-works/pi/blob/ac4ac9eaf69f2b01ca3af984a5c48f3b99b84278/README.md#L84" data-expect="npm-shrinkwrap.json">README.md:84</a></td></tr>
+<tr><td>安装时</td><td>本地发布安装、文档里的 npm 安装、<code>pi update --self</code> 一律 <code>--ignore-scripts</code></td><td><a class="src" href="https://github.com/earendil-works/pi/blob/ac4ac9eaf69f2b01ca3af984a5c48f3b99b84278/README.md#L86" data-expect="use `--ignore-scripts` where supported">README.md:86</a></td></tr>
+<tr><td>CI</td><td><code>npm ci --ignore-scripts</code> + 定时 <code>npm audit</code> 与签名校验</td><td><a class="src" href="https://github.com/earendil-works/pi/blob/ac4ac9eaf69f2b01ca3af984a5c48f3b99b84278/README.md#L87" data-expect="npm audit signatures --omit=dev">README.md:87</a></td></tr>
+<tr><td>发版</td><td>npm trusted publishing，走 GitHub Actions OIDC，无本地 token/OTP</td><td><a class="src" href="https://github.com/earendil-works/pi/blob/ac4ac9eaf69f2b01ca3af984a5c48f3b99b84278/AGENTS.md#L159" data-expect="npm trusted publishing through GitHub Actions OIDC">AGENTS.md:159</a></td></tr>
+</tbody></table></div>
+
+<h2>两个值得单独看的细节</h2>
+
+<p><b>① <code>min-release-age=2</code>。</b>npm 解析依赖时跳过发布不足 2 天的版本。<a class="src" href="https://github.com/earendil-works/pi/blob/ac4ac9eaf69f2b01ca3af984a5c48f3b99b84278/.npmrc#L2" data-expect="min-release-age=2">.npmrc:2</a> 这一行专门针对<b>被攻破的维护者账号发布恶意版本</b>这一类事件——这类投毒的典型生命周期是「发布 → 数小时内被发现 → 撤包」，两天的延迟就把绝大部分窗口错开了。代价是拿不到当天的安全补丁，所以发版时要显式 <code>npm_config_min_release_age=0</code> 临时关闭。</p>
+
+<p><b>② 生命周期脚本白名单只有两条，而且每条写了理由。</b></p>
+
+<div class="tpl">
+  <div class="tpl-head"><span class="path">scripts/generate-coding-agent-shrinkwrap.mjs</span><span class="lines literal">原文 L13–L16</span></div>
+  <pre><code>const allowedInstallScriptPackages = new Map([
+    ["@google/genai@1.52.0", "preinstall is a no-op in the published package"],
+    ["protobufjs@7.6.5", "postinstall only warns about protobufjs version scheme mismatches"],
+]);</code></pre>
+  <div class="tpl-foot">白名单的 key 带<b>精确版本号</b>——依赖升级后必须重新审一次。value 不是注释而是 Map 的值，<b>结构上强制你写理由</b>。<a class="src" href="https://github.com/earendil-works/pi/blob/ac4ac9eaf69f2b01ca3af984a5c48f3b99b84278/scripts/generate-coding-agent-shrinkwrap.mjs#L13" data-expect="const allowedInstallScriptPackages = new Map([">generate-coding-agent-shrinkwrap.mjs:13</a></div>
+</div>
+
+<p>新增带生命周期脚本的依赖会让检查失败，直到有人显式加进这个白名单——<code>AGENTS.md</code> 里配了一条给 agent 的硬规矩：<b>never add one silently</b>。<a class="src" href="https://github.com/earendil-works/pi/blob/ac4ac9eaf69f2b01ca3af984a5c48f3b99b84278/AGENTS.md#L45" data-expect="never add one silently">AGENTS.md:45</a></p>
+
+<h2>精确版本是程序化校验的，不是靠自觉</h2>
+
+<div class="tpl">
+  <div class="tpl-head"><span class="path">scripts/check-pinned-deps.mjs</span><span class="lines literal">原文 L5</span></div>
+  <pre><code>const exactVersionPattern = /^(?:0|[1-9]\d*)\.(?:0|[1-9]\d*)\.(?:0|[1-9]\d*)(?:-[0-9A-Za-z.-]+)?(?:\+[0-9A-Za-z.-]+)?$/;</code></pre>
+  <div class="tpl-foot">一个不接受任何 <code>^</code> / <code>~</code> / <code>*</code> 的 semver 正则，任何直接外部依赖只要不是三段精确版本就报错退出。<a class="src" href="https://github.com/earendil-works/pi/blob/ac4ac9eaf69f2b01ca3af984a5c48f3b99b84278/scripts/check-pinned-deps.mjs#L60" data-expect="Direct external dependencies must use exact versions:">check-pinned-deps.mjs:60</a></div>
+</div>
+
+<h2>特定依赖的特殊规矩</h2>
+
+<p><code>AGENTS.md</code> 里点名了一个包：更新 <code>undici</code> 时<b>必须</b>读目标版本的 changelog / release notes，评估是否影响功能后才能应用。<a class="src" href="https://github.com/earendil-works/pi/blob/ac4ac9eaf69f2b01ca3af984a5c48f3b99b84278/AGENTS.md#L42" data-expect="you MUST read its changelog/release notes for the target version">AGENTS.md:42</a></p>
+
+<p>为什么是 undici：它是所有 provider 请求的 HTTP 层，它的行为变化（连接池、超时、流式语义）会以极难诊断的方式影响 agent。<b>把「这一个依赖需要人读 changelog」写进给 agent 的规则文件</b>，比泛泛地说「谨慎升级依赖」有用得多。</p>
+
+</section>
+
+<section id="s3">
+  <div class="sec-tag"><span class="cell"></span><span class="lab">§3 Design 设计动机与权衡</span></div>
+  <h2>为什么这条链值得整条抄</h2>
+
+<p>供应链攻击的经济学很特别：攻击者的成本几乎恒定（攻破一个流行包的维护者账号），而收益随下游用户数线性增长。对一个装在开发者机器上、持有 provider API key、能执行任意命令的 CLI 来说，<b>它的下游用户是「有 API key 且有 shell 权限的开发者」</b>——这是攻击者能想到的最好的一批受害者。</p>
+
+<p>所以 pi 在这里的谨慎程度与它在运行时权限上的放任，并不是自相矛盾，而是同一个判断的两面：<b>把有限的防御预算花在真能守住的关口上。</b>依赖引入是一个离散的、可评审的、频率很低的事件；运行时的每一次工具调用不是。</p>
+
+<h2>OIDC trusted publishing 消掉的是什么</h2>
+
+<p>传统发布流程里，某台机器上存着一个能发布 npm 包的长期 token。那个 token 是整条链上最值钱的东西——拿到它就能发布带后门的新版本，绕过前面所有的锁版本和白名单。</p>
+
+<p>OIDC trusted publishing 把它换成 GitHub Actions 在特定环境下签发的短期身份凭证：<b>没有长期 token，没有 OTP，没有本地 <code>npm publish</code></b>。<a class="src" href="https://github.com/earendil-works/pi/blob/ac4ac9eaf69f2b01ca3af984a5c48f3b99b84278/AGENTS.md#L159" data-expect="no local `npm publish`, `npm whoami`, OTP, or WebAuthn flow is required">AGENTS.md:159</a> 攻击面从「一个可能泄漏的密钥」变成「一个需要攻破的 CI 配置」。</p>
+
+<p>发布流程还有一道后置校验：发布后有专门的 job <b>逐个确认每个公开工作区包都能按精确发布版本解析、且其 npm tarball 可获取</b>，然后才写「已验证发布」标记；<code>pi.dev/api/latest-version</code> 读的是那个标记。<b>「绝不能在这个 job 成功之前从 npm 宣告新版本」</b>——这句写在 AGENTS.md 里。<a class="src" href="https://github.com/earendil-works/pi/blob/ac4ac9eaf69f2b01ca3af984a5c48f3b99b84278/AGENTS.md#L159" data-expect="it must never announce a release from npm before this job succeeds">AGENTS.md:159</a></p>
+
+<h2>代价</h2>
+
+<p>精确锁版本 + 2 天延迟 + shrinkwrap，合起来意味着<b>安全补丁的到达速度变慢</b>，而且每次依赖升级都是一次需要人参与的显式操作。对一个由 3 位主要维护者 + 大量偶发贡献者组成的项目，这是可观的持续成本。</p>
+
+<p>他们的对冲是把这些检查<b>全部程序化并塞进 <code>npm run check</code></b>——成本从「记得要做」变成「不做就红」。这是本章最实用的一条：<b>纪律不可持续，门禁可持续。</b></p>
+
+</section>
+
+<section id="s4">
+  <div class="sec-tag"><span class="cell"></span><span class="lab">§4 Limits 边界与失效条件</span></div>
+
+<ul>
+  <li><b><code>min-release-age=2</code> 挡不住有耐心的攻击者。</b>它针对的是「发布后数小时内被发现」的投毒模式。一个潜伏两周才激活的后门版本，这条规则完全无效。</li>
+  <li><b>白名单是按 <code>包@版本</code> 锁的，升级即失效——这是特性，但也是摩擦。</b>两条白名单里那两个包每次升版都要重新走一次审。项目一大，这个列表会变成「谁也不敢动」的地方。</li>
+  <li><b>整条链保护的是「依赖引入」，不保护「依赖已经在跑」。</b>一个通过审查的依赖在运行时做什么，仍然回到 <a href="ch15.html">第 15 章</a> 的结论：没有沙箱。</li>
+  <li><b>pre-commit 的 lockfile 拦截可被环境变量绕过。</b><code>PI_ALLOW_LOCKFILE_CHANGE=1</code> 存在的理由是正当的（发版要改 lockfile），但它同时意味着这道门禁是<b>防手滑，不防有意</b>。</li>
+</ul>
+
+<p><b>检查过并确认</b>：<code>npm run check</code> 确实串联了 <code>check:pinned-deps</code>、<code>check:ts-imports</code>、<code>check:shrinkwrap</code>、<code>check:install-lock:coding-agent</code>、<code>check:browser-smoke</code> 五道自定义门禁外加 biome 与 tsgo，且 <code>--error-on-warnings</code> 让警告也算失败。<a class="src" href="https://github.com/earendil-works/pi/blob/ac4ac9eaf69f2b01ca3af984a5c48f3b99b84278/package.json#L18" data-expect="biome check --write --error-on-warnings">package.json:18</a></p>
+
+</section>
+
+<section id="s5">
+  <div class="sec-tag"><span class="cell"></span><span class="lab">§5 Takeaway 拿走什么</span></div>
+
+<ul class="takeaway">
+  <li><b>设一个「最短发布年龄」再解析依赖。</b>一行 <code>.npmrc</code> 配置，成本几乎为零，挡掉的是最常见的一类投毒窗口。
+    <span class="cond">适用条件：npm 生态。<b>发版当天要临时关闭</b>——否则你自己的新版本也会被自己的规则挡住。</span></li>
+  <li><b>生命周期脚本白名单用 <code>包@精确版本 → 理由</code> 的 Map，而不是数组。</b>数据结构强制写理由，升级自动作废旧审查结论。
+    <span class="cond">适用条件：任何允许安装脚本的包管理器。<b>这是全章最容易直接抄的一条。</b></span></li>
+  <li><b>把「某个特定依赖需要人读 changelog」写进规则文件，点名到包。</b>泛泛的「谨慎升级」没人执行；「更新 undici 必须读 release notes」会被执行。
+    <span class="cond">适用条件：你有 1–3 个行为变化会造成难诊断故障的关键依赖。</span></li>
+  <li><b>发布用 CI 的短期身份凭证，别用长期 token；并在宣告新版本前先验证包真的可解析、可下载。</b>前者消灭最值钱的攻击目标，后者防的是「宣告了但用户装不上」。
+    <span class="cond">适用条件：有 CI 且 registry 支持 OIDC。<b>手工发版时这两条都无从谈起。</b></span></li>
+</ul>
+
+</section>
+
+<section id="quiz">
+  <div class="sec-tag"><span class="cell"></span><span class="lab">§ Self-check 自测</span></div>
+
+<div class="quiz">
+
+<div class="q" data-answer="c">
+  <p class="qprompt"><span class="qtype">场景</span>你给 pi 加一个新依赖，它有 <code>postinstall</code> 脚本。<code>npm run check</code> 会怎样？</p>
+  <div class="opts">
+    <button class="opt" type="button" data-ch="a">通过，postinstall 在 CI 里本来就被 <code>--ignore-scripts</code> 跳过</button>
+    <button class="opt" type="button" data-ch="b">通过但打印警告</button>
+    <button class="opt" type="button" data-ch="c">失败，直到有人把它连同理由加进白名单</button>
+  </div>
+  <details><summary>看答案</summary><div class="answer">
+    <p><b>C。</b>shrinkwrap 生成脚本会对 <code>hasInstallScript</code> 的条目报错，除非命中 <code>allowedInstallScriptPackages</code>。而 <code>AGENTS.md</code> 明令「never add one silently」。<a class="src" href="https://github.com/earendil-works/pi/blob/ac4ac9eaf69f2b01ca3af984a5c48f3b99b84278/AGENTS.md#L45" data-expect="never add one silently">AGENTS.md:45</a></p>
+  </div></details>
+</div>
+
+<div class="q" data-answer="a">
+  <p class="qprompt"><span class="qtype">场景</span>发版时为什么要临时设 <code>npm_config_min_release_age=0</code>？</p>
+  <div class="opts">
+    <button class="opt" type="button" data-ch="a">因为刚发布的自家工作区包也会被 2 天规则挡住，导致发布时的 lockfile 刷新失败</button>
+    <button class="opt" type="button" data-ch="b">为了加快 CI</button>
+    <button class="opt" type="button" data-ch="c">为了拉取最新的安全补丁</button>
+  </div>
+  <details><summary>看答案</summary><div class="answer">
+    <p><b>A。</b>AGENTS.md 的原话：仓库常规的 npm age gate 会在当前工作区包版本刚发布时挡住发布用的 lockfile 刷新。所以这个开关<b>只用于发布命令</b>。<a class="src" href="https://github.com/earendil-works/pi/blob/ac4ac9eaf69f2b01ca3af984a5c48f3b99b84278/AGENTS.md#L155" data-expect="Use `npm_config_min_release_age=0` only for the release command.">AGENTS.md:155</a></p>
+  </div></details>
+</div>
+
+</div>
+</section>
+
+<div class="next">
+  <a href="ch15.html">← 15 不做权限系统</a>
+  <a href="ch17.html">17 AGENTS.md →</a>
+</div>
+
+<div class="anchor-foot">
+基于 <a href="https://github.com/earendil-works/pi/tree/ac4ac9eaf69f2b01ca3af984a5c48f3b99b84278">earendil-works/pi @ <code>ac4ac9e</code></a>（2026-08-07 快照）。<br>
+仓库 commit 速度约 428/月，行号引用仅对该 SHA 有效。
+</div>
+
+</div>
+<script src="../assets/quiz.js" defer></script>
+</body>
+</html>

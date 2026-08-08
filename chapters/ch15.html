@@ -1,0 +1,227 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>15 不做权限系统 · Pi 源码解读手册</title>
+<meta name="description" content="「partial sandbox 会被误当成安全边界」这个论证成立吗；project trust 到底防什么">
+<link rel="icon" type="image/svg+xml" href="../assets/favicon.svg">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@500;700&family=Noto+Sans+SC:wght@400;500;700&family=IBM+Plex+Mono:wght@400;500&display=swap" rel="stylesheet" media="print" onload="this.media='all'">
+<noscript><link href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@500;700&family=Noto+Sans+SC:wght@400;500;700&family=IBM+Plex+Mono:wght@400;500&display=swap" rel="stylesheet"></noscript>
+<link rel="stylesheet" href="../assets/handbook.css">
+<script src="../assets/theme.js"></script>
+</head>
+<body>
+<button class="theme-toggle" type="button" aria-label="切换深色/浅色模式" title="切换深色/浅色模式">
+  <span class="sun" aria-hidden="true">☀️</span><span class="moon" aria-hidden="true">🌙</span>
+</button>
+<div class="wrap">
+<nav class="crumb"><a href="../index.html">← 目录</a> · <a href="../sources.html">溯源索引</a> · <a href="../drift.html">漂移记录</a></nav>
+
+<header class="ch">
+  <div class="bars" aria-hidden="true"><span class="l1"></span><span class="l2"></span><span class="l3"></span><span class="l4 f"></span></div>
+  <div class="kicker">Part V · Engineering &amp; Governance</div>
+  <h1>15 不做权限系统
+    <span class="zh">把安全边界整个推给操作系统，这个论证站得住吗</span>
+  </h1>
+  <div class="meta">
+    <span class="status shipped">已发布</span>
+    <span>内建沙箱 <b>无</b></span>
+    <span>project trust <b>只管加载</b></span>
+    <span>容器化方案 <b>3 种</b></span>
+  </div>
+</header>
+
+<section id="s1">
+  <div class="sec-tag"><span class="cell"></span><span class="lab">§1 Mental Model 一句话心智模型</span></div>
+  <h2>先记住这一句</h2>
+
+<div class="oneliner"><b>pi 没有权限系统，而且明确拒绝做一个。它的论证是：<em>部分沙箱最危险的地方不是防不住，而是它看起来像个边界。</em>真正的隔离必须来自操作系统或虚拟化，所以核心一行都不做。</b></div>
+
+<p>这是全书争议最大的设计决定，也是最容易被简化成「pi 不安全」的一条。要评价它，先得把两件常被混为一谈的东西分开：</p>
+
+<ul>
+  <li><b>project trust</b>——控制 pi <em>启动时加载哪些东西</em>（项目里的 settings、扩展、skills、主题）。它防的是「一个仓库在你还没开始干活之前就悄悄改了 pi 的行为」。</li>
+  <li><b>沙箱</b>——控制 pi <em>运行起来之后能碰什么</em>。<b>pi 完全没有这一层。</b></li>
+</ul>
+
+<p>把 project trust 当成沙箱，是使用 pi 时最危险的误解。它自己的文档也是这么强调的。</p>
+
+</section>
+
+<section id="s2">
+  <div class="sec-tag"><span class="cell"></span><span class="lab">§2 Evidence 代码实证</span></div>
+  <h2>论证原文</h2>
+
+<p>README 的措辞是描述性的：pi 不含用于限制文件系统、进程、网络、凭证访问的内建权限系统，默认以启动它的用户和进程的权限运行。<a class="src" href="https://github.com/earendil-works/pi/blob/ac4ac9eaf69f2b01ca3af984a5c48f3b99b84278/README.md#L40" data-expect="Pi does not include a built-in permission system">README.md:40</a></p>
+
+<p><code>docs/security.md</code> 给出的才是论证本体：</p>
+
+<div class="tpl">
+  <div class="tpl-head"><span class="path">packages/coding-agent/docs/security.md</span><span class="lines literal">原文 L35</span></div>
+  <pre><code>This is intentional. Pi is designed to operate on local source trees, invoke project
+toolchains, and integrate with the user's existing development environment. A partial
+in-process sandbox would be easy to misunderstand as a security boundary while still
+depending on the host shell, filesystem, package managers, credentials, and extension
+code. Real isolation needs to come from the operating system or a
+virtualization/container boundary.</code></pre>
+  <div class="tpl-foot">论证结构：①目标就是要碰宿主工具链 → ②进程内沙箱必然漏（shell、包管理器、扩展代码都在边界外） → ③一个漏的边界比没有边界更糟，因为它会被信任。</div>
+</div>
+
+<p>紧接着一段把 project trust 的定位钉死：它只是<b>输入加载的守卫</b>，防的是仓库在你批准之前悄悄改 pi 的设置或扩展；它<b>不会让不可信的代码、不可信的 prompt、或不可信的模型输出变得安全</b>。<a class="src" href="https://github.com/earendil-works/pi/blob/ac4ac9eaf69f2b01ca3af984a5c48f3b99b84278/packages/coding-agent/docs/security.md#L37" data-expect="Project trust is only an input-loading guard.">security.md:37</a></p>
+
+<p>同一段还有一句在同类项目文档里罕见的坦白：<b>来自仓库文件、注释、文档、构建输出的 prompt injection，是本地 agent 的预期风险，pi 无法可靠防止。</b>这不是免责声明的位置——它出现在解释设计的正文里。</p>
+
+<h2>project trust 具体管什么</h2>
+
+<p>触发条件是一份明确的清单——从当前目录发现以下任一项，就认为该项目「有需要信任才能加载的资源」：<a class="src" href="https://github.com/earendil-works/pi/blob/ac4ac9eaf69f2b01ca3af984a5c48f3b99b84278/packages/coding-agent/docs/security.md#L9" data-expect="Pi considers a project to have resources that require trust">security.md:9–16</a></p>
+
+<div class="tbl-scroll"><table><thead><tr><th>要信任才加载</th><th>无论如何都加载</th></tr></thead><tbody>
+<tr><td><code>.pi/settings.json</code></td><td><code>AGENTS.md</code></td></tr>
+<tr><td><code>.pi/extensions</code>、<code>skills</code>、<code>prompts</code>、<code>themes</code></td><td><code>AGENTS.override.md</code></td></tr>
+<tr><td><code>.pi/SYSTEM.md</code>、<code>.pi/APPEND_SYSTEM.md</code></td><td><code>CLAUDE.md</code></td></tr>
+<tr><td>项目 <code>.agents/skills</code></td><td>用户级/全局扩展、CLI <code>-e</code> 扩展</td></tr>
+</tbody></table></div>
+
+<p><b>右边这一列值得盯一眼。</b>上下文文件（<code>AGENTS.md</code> / <code>CLAUDE.md</code>）无视 project trust 一律加载。<a class="src" href="https://github.com/earendil-works/pi/blob/ac4ac9eaf69f2b01ca3af984a5c48f3b99b84278/packages/coding-agent/docs/security.md#L27" data-expect="are loaded regardless of project trust unless context loading is disabled">security.md:27</a> 也就是说：<b>clone 一个陌生仓库后启动 pi，即使拒绝信任，那个仓库的 <code>AGENTS.md</code> 也已经进了系统提示。</b></p>
+
+<p>这在 pi 自己的威胁模型里是自洽的（prompt injection 本就在边界之外），但它把「拒绝信任」这个动作的保护范围压得比多数人直觉中窄得多。</p>
+
+<h2>非交互模式没有信任提示</h2>
+
+<p><code>-p</code>、<code>--mode json</code>、<code>--mode rpc</code> 都不弹信任提示。没有已保存决定时，默认值 <code>"ask"</code> 与 <code>"never"</code> 都会<b>忽略</b>这些资源，只有 <code>"always"</code> 才信任。<a class="src" href="https://github.com/earendil-works/pi/blob/ac4ac9eaf69f2b01ca3af984a5c48f3b99b84278/packages/coding-agent/docs/security.md#L29" data-expect="Non-interactive modes (`-p`, `--mode json`, and `--mode rpc`) do not show a trust prompt.">security.md:29</a></p>
+
+<p>默认拒绝——对自动化场景是正确的方向。</p>
+
+<h2>补偿方案：三种容器化模式</h2>
+
+<div class="tbl-scroll"><table><thead><tr><th>方案</th><th>隔离的是</th><th>凭证在哪</th></tr></thead><tbody>
+<tr><td><b>Gondolin</b>（micro-VM 扩展）</td><td>内建工具与 <code>!</code> 命令</td><td><b>留在宿主</b></td></tr>
+<tr><td><b>Docker</b></td><td>整个 pi 进程</td><td>进容器</td></tr>
+<tr><td><b>OpenShell</b></td><td>整个 pi 进程 + 策略控制</td><td>可留在网关外</td></tr>
+</tbody></table></div>
+
+<p>文档给了一条容易被忽略的提醒：<b>扩展在 pi 进程所在的地方运行</b>。用 Gondolin 把内建工具路由进 VM 时，其它自定义扩展的工具<b>仍在宿主上跑</b>，除非它们也自己做委派。<a class="src" href="https://github.com/earendil-works/pi/blob/ac4ac9eaf69f2b01ca3af984a5c48f3b99b84278/packages/coding-agent/docs/containerization.md#L17" data-expect="Extensions run wherever the `pi` process runs.">containerization.md:17</a></p>
+
+<p>还有一条同样实在：bind-mount 宿主工作区为读写时，容器/VM 里的写入<b>照样改宿主文件</b>。<a class="src" href="https://github.com/earendil-works/pi/blob/ac4ac9eaf69f2b01ca3af984a5c48f3b99b84278/packages/coding-agent/docs/security.md#L53" data-expect="writes from inside the container or VM can still modify host files">security.md:53</a> 容器隔离的是进程，不是你挂进去的那个目录。</p>
+
+<h2>安全边界的显式定义</h2>
+
+<p>文档最后一段划出了「什么不算漏洞」：预期的本地 agent 行为、没有内建沙箱这件事本身、来自不可信内容的 prompt injection、用户自己装的扩展或 skill 的行为——除非报告能证明存在<b>真正的权限边界绕过</b>，或证明 pi 授予了本地用户原本没有的访问权。<a class="src" href="https://github.com/earendil-works/pi/blob/ac4ac9eaf69f2b01ca3af984a5c48f3b99b84278/packages/coding-agent/docs/security.md#L59" data-expect="are generally outside the security boundary unless the report demonstrates a real privilege-boundary bypass">security.md:59</a></p>
+
+<p>把边界写清楚本身是负责任的做法——它让安全研究者知道什么值得报，也让用户知道自己在承担什么。</p>
+
+</section>
+
+<section id="s3">
+  <div class="sec-tag"><span class="cell"></span><span class="lab">§3 Design 设计动机与权衡</span></div>
+  <h2>这个论证的强项</h2>
+
+<p>「部分沙箱会被误当成边界」不是托词，它有真实的历史支撑：进程内的权限提示一旦存在，用户就会形成「pi 会拦住危险操作」的心智模型，而绕过它的路径多到数不清——一条 <code>bash</code> 命令、一个 npm 生命周期脚本、一个扩展、一个语言服务器。<b>要拦住这些，你要重新实现的是操作系统。</b></p>
+
+<p>而 pi 的目标场景恰恰要求这些能力全开：跑项目的 toolchain、装依赖、执行测试。一个「安全的编码 agent」如果不能跑 <code>npm test</code>，那它没解决用户的问题。</p>
+
+<h2>这个论证的弱项</h2>
+
+<p>论证成立的前提是<b>二分法：要么有真边界，要么没有</b>。但现实里存在中间物，它们的价值不在于「拦住攻击者」而在于「拦住事故」：</p>
+
+<ul>
+  <li>一次误删 <code>~/</code> 的 <code>rm -rf</code>；</li>
+  <li>模型在错误的目录里跑了 <code>git reset --hard</code>；</li>
+  <li>一次把 <code>.env</code> 内容 <code>cat</code> 进上下文然后发给 provider。</li>
+</ul>
+
+<p>这些不是「被恶意绕过」的场景，是「模型犯错」的场景，而模型犯错是<b>高频事件</b>。针对高频事故的确认提示，与针对攻击者的安全边界，是两个不同的产品；pi 用「不做安全边界」的理由把两者一起否掉了。</p>
+
+<p>公平地说，pi 并非完全没有事故防线——<code>AGENTS.md</code> 里那份 git 禁令清单（<a href="ch17.html">第 17 章</a>）正是干这个的，只不过它是<b>写给模型的纪律，不是运行时的拦截</b>。区别在于：纪律靠模型遵守，拦截不靠。</p>
+
+<h2>与 Claude Code 的对照</h2>
+
+<p>Claude Code 走了另一条路：有权限系统，工具调用按模式询问用户。它同样<b>不是</b>安全边界（一条被批准的 bash 命令可以做任何事），但它把「模型即将做一件不可逆的事」这个时刻暴露给了人。</p>
+
+<p>两者的取舍差异可以概括为：<b>pi 认为不完整的边界会误导用户，因此不提供；Claude Code 认为不完整的边界仍能减少事故，因此提供并说明它不是沙箱。</b>这是产品哲学分歧，不是谁对谁错——但用户需要知道自己选的是哪一种。</p>
+
+<p>值得注意的是，pi 的立场在<b>它自己的目标用户</b>身上更容易成立：一个能配 Gondolin micro-VM 的开发者，确实不需要进程内的假边界。</p>
+
+</section>
+
+<section id="s4">
+  <div class="sec-tag"><span class="cell"></span><span class="lab">§4 Limits 边界与失效条件</span></div>
+  <h2>这个设计在什么条件下失效</h2>
+
+<ul>
+  <li><b>用户不做容器化时，整个论证的后半段落空。</b>「真正的隔离应当来自 OS」只有在用户真的去做了才成立。默认安装、默认使用的 pi，隔离级别是零。文档把责任交给了用户，而绝大多数用户不会读 <code>containerization.md</code>。</li>
+  <li><b><code>AGENTS.md</code> 无视 trust 决定。</b>拒绝信任一个仓库，仍会加载它的上下文文件。<a class="src" href="https://github.com/earendil-works/pi/blob/ac4ac9eaf69f2b01ca3af984a5c48f3b99b84278/packages/coding-agent/docs/security.md#L27" data-expect="are loaded regardless of project trust unless context loading is disabled">security.md:27</a> 对「我只是想看看这个陌生仓库」的用户，「拒绝」这个按钮给的保护比它看起来的小。</li>
+  <li><b>Gondolin 模式下扩展仍在宿主运行。</b>一个装了若干扩展的用户，以为切到 micro-VM 就安全了，实际上扩展工具仍有完整宿主权限。<a class="src" href="https://github.com/earendil-works/pi/blob/ac4ac9eaf69f2b01ca3af984a5c48f3b99b84278/packages/coding-agent/docs/containerization.md#L17" data-expect="Extensions run wherever the `pi` process runs.">containerization.md:17</a></li>
+  <li><b>没有针对事故的护栏。</b>模型犯错与攻击者绕过被当成同一类问题处理，但它们的频率相差几个数量级。</li>
+  <li><b>企业场景基本不适用。</b>「让用户自己容器化」在个人开发者那里可行，在需要集中管控与审计的组织里不成立——那里需要的恰恰是可配置、可审计的策略层。</li>
+</ul>
+
+<p><b>检查过并确认的</b>：<code>security.md</code> 的 Security Policy 链接指向旧仓名 <code>pi-mono</code>（漂移 d2，见 <a href="../drift.html">漂移记录</a>）。目前靠 GitHub 301 重定向仍可达，但安全策略链接依赖第三方重定向不是好实践。<a class="src" href="https://github.com/earendil-works/pi/blob/ac4ac9eaf69f2b01ca3af984a5c48f3b99b84278/packages/coding-agent/docs/security.md#L57" data-expect="earendil-works/pi-mono/blob/main/SECURITY.md">security.md:57</a></p>
+
+</section>
+
+<section id="s5">
+  <div class="sec-tag"><span class="cell"></span><span class="lab">§5 Takeaway 拿走什么</span></div>
+
+<ul class="takeaway">
+  <li><b>如果你不做真边界，就把这件事写进文档正文，而不是免责声明里。</b>pi 在解释设计的段落里直说「prompt injection 无法可靠防止」——这比一个没人读的 DISCLAIMER 有用得多。
+    <span class="cond">适用条件：任何执行模型输出的工具。<b>这条无条件成立。</b></span></li>
+  <li><b>把「加载守卫」和「运行时沙箱」在文档和 UI 上彻底分开命名。</b>pi 的 project trust 做对了命名，但仍需一整段解释它<em>不是</em>什么——说明这个区分对用户天然反直觉。
+    <span class="cond">适用条件：你有任何形式的「信任此项目」提示。<b>如果同时没有沙箱，这个提示尤其容易被误读。</b></span></li>
+  <li><b>区分「防攻击者」和「防事故」，分别决策。</b>拒绝做安全边界的理由，不自动等于拒绝做误操作确认——后者面对的是高频的模型错误，不是低频的攻击。
+    <span class="cond">适用条件：模型可执行不可逆操作。<b>只读 agent 不需要这一层。</b></span></li>
+  <li><b>推荐容器化时，明确写出「什么仍然在边界外」。</b>pi 写了两条关键的（扩展在宿主跑、bind-mount 写穿宿主），这两条恰恰是用户最容易假设已被解决的。
+    <span class="cond">适用条件：你的隔离方案是部分的。<b>而部分隔离几乎总是常态。</b></span></li>
+</ul>
+
+</section>
+
+<section id="quiz">
+  <div class="sec-tag"><span class="cell"></span><span class="lab">§ Self-check 自测</span></div>
+
+<div class="quiz">
+
+<div class="q" data-answer="b">
+  <p class="qprompt"><span class="qtype">场景</span>你 clone 了一个陌生仓库，启动 pi，在信任提示里选了「不信任」。这个仓库的 <code>AGENTS.md</code> 会进系统提示吗？</p>
+  <div class="opts">
+    <button class="opt" type="button" data-ch="a">不会，拒绝信任就什么都不加载</button>
+    <button class="opt" type="button" data-ch="b">会——上下文文件不受 project trust 管辖</button>
+    <button class="opt" type="button" data-ch="c">会，但内容被标记为不可信</button>
+  </div>
+  <details><summary>看答案</summary><div class="answer">
+    <p><b>B。</b><code>AGENTS.override.md</code> / <code>AGENTS.md</code> / <code>CLAUDE.md</code> 无视 project trust 一律加载（除非整体关闭上下文加载）。project trust 管的是 settings / 扩展 / skills / 主题这类<b>会改变 pi 行为</b>的资源。<a class="src" href="https://github.com/earendil-works/pi/blob/ac4ac9eaf69f2b01ca3af984a5c48f3b99b84278/packages/coding-agent/docs/security.md#L27" data-expect="are loaded regardless of project trust unless context loading is disabled">security.md:27</a></p>
+  </div></details>
+</div>
+
+<div class="q" data-answer="c">
+  <p class="qprompt"><span class="qtype">场景</span>你用 Gondolin 扩展把内建工具全路由进 micro-VM，同时还装了三个自己写的扩展工具。那三个工具在哪跑？</p>
+  <div class="opts">
+    <button class="opt" type="button" data-ch="a">也在 VM 里，Gondolin 会接管全部工具</button>
+    <button class="opt" type="button" data-ch="b">在 VM 里，但没有网络</button>
+    <button class="opt" type="button" data-ch="c">在宿主上，拥有完整宿主权限</button>
+  </div>
+  <details><summary>看答案</summary><div class="answer">
+    <p><b>C。</b>「Extensions run wherever the <code>pi</code> process runs.」Gondolin 覆盖的是 <code>read</code>/<code>write</code>/<code>edit</code>/<code>bash</code>/<code>grep</code>/<code>find</code>/<code>ls</code> 与 <code>!</code> 命令；其它扩展工具除非自己委派，否则留在宿主。<a class="src" href="https://github.com/earendil-works/pi/blob/ac4ac9eaf69f2b01ca3af984a5c48f3b99b84278/packages/coding-agent/docs/containerization.md#L17" data-expect="Extensions run wherever the `pi` process runs.">containerization.md:17</a></p>
+  </div></details>
+</div>
+
+</div>
+</section>
+
+<div class="next">
+  <a href="ch14.html">← 14 headless</a>
+  <a href="ch16.html">16 供应链硬化 →</a>
+</div>
+
+<div class="anchor-foot">
+基于 <a href="https://github.com/earendil-works/pi/tree/ac4ac9eaf69f2b01ca3af984a5c48f3b99b84278">earendil-works/pi @ <code>ac4ac9e</code></a>（2026-08-07 快照）。<br>
+仓库 commit 速度约 428/月，行号引用仅对该 SHA 有效。
+</div>
+
+</div>
+<script src="../assets/quiz.js" defer></script>
+</body>
+</html>

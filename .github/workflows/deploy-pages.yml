@@ -1,0 +1,66 @@
+# 部署到 GitHub Pages。
+# 发布站点文件（index / glossary / drift / sources / chapters / assets / data）；
+# tools/ 与 *.md 为构建期资源，repo/（pi 克隆）不入库也不发布。
+#
+# CI 里重跑全部门禁：门禁需要锚定 SHA 的 pi 工作树来做 git show 核对，
+# 用 depth-1 fetch 指定 SHA 获取（不拉全历史；stats.json 已在本地生成并提交，
+# CI 不重新生成——rev-list 计数需要全历史，浅克隆算不对）。
+name: deploy-pages
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+concurrency:
+  group: pages
+  cancel-in-progress: true
+
+env:
+  PI_SHA: ac4ac9eaf69f2b01ca3af984a5c48f3b99b84278
+
+jobs:
+  build-deploy:
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: 获取 earendil-works/pi @ 锚定 SHA（浅）
+        run: |
+          git init repo
+          git -C repo remote add origin https://github.com/earendil-works/pi.git
+          git -C repo fetch --depth 1 origin "$PI_SHA"
+          git -C repo checkout --detach FETCH_HEAD
+          test "$(git -C repo rev-parse HEAD)" = "$PI_SHA"
+
+      - name: GATE 1–4 · 引用 / 状态 / 漂移 / 死链（release 模式）
+        run: node tools/check-citations.mjs --release
+
+      - name: GATE 5 · 代码块核对（原文逐字 / 改写披露）
+        run: node tools/check-literals.mjs
+
+      - name: GATE 6 含于 1–4；对门禁自身做 mutation test
+        run: ./tools/mutate-test.sh
+
+      - name: 组装发布目录（排除 tools/ 与 *.md）
+        run: |
+          mkdir _site
+          cp index.html glossary.html drift.html sources.html _site/
+          cp -r chapters assets data _site/
+
+      - uses: actions/configure-pages@v5
+
+      - uses: actions/upload-pages-artifact@v3
+        with:
+          path: _site
+
+      - id: deployment
+        uses: actions/deploy-pages@v4

@@ -1,0 +1,155 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>11 TUI 差分渲染 · Pi 源码解读手册</title>
+<meta name="description" content="为什么自己写终端 UI 库，差分渲染解决的是什么问题">
+<link rel="icon" type="image/svg+xml" href="../assets/favicon.svg">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@500;700&family=Noto+Sans+SC:wght@400;500;700&family=IBM+Plex+Mono:wght@400;500&display=swap" rel="stylesheet" media="print" onload="this.media='all'">
+<noscript><link href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@500;700&family=Noto+Sans+SC:wght@400;500;700&family=IBM+Plex+Mono:wght@400;500&display=swap" rel="stylesheet"></noscript>
+<link rel="stylesheet" href="../assets/handbook.css">
+<script src="../assets/theme.js"></script>
+</head>
+<body>
+<button class="theme-toggle" type="button" aria-label="切换深色/浅色模式" title="切换深色/浅色模式">
+  <span class="sun" aria-hidden="true">☀️</span><span class="moon" aria-hidden="true">🌙</span>
+</button>
+<div class="wrap">
+<nav class="crumb"><a href="../index.html">← 目录</a> · <a href="../sources.html">溯源索引</a> · <a href="../drift.html">漂移记录</a></nav>
+
+<header class="ch">
+  <div class="bars" aria-hidden="true"><span class="l1"></span><span class="l2"></span><span class="l3"></span><span class="l4 f"></span></div>
+  <div class="kicker">Part IV · Interface &amp; Extensions</div>
+  <h1>11 TUI 差分渲染
+    <span class="zh">为什么值得手写 3.2 万行终端 UI</span>
+  </h1>
+  <div class="meta"><span class="status shipped">已发布</span><span>包规模 <b>32374 行</b></span><span>内部依赖 <b>0</b></span></div>
+</header>
+
+<section id="s1">
+  <div class="sec-tag"><span class="cell"></span><span class="lab">§1 Mental Model 一句话心智模型</span></div>
+
+  <h2>先记住这一句</h2>
+<div class="oneliner"><b>agent 的输出是<em>流式且频繁重排</em>的：一段文字在生成中不断变长、工具结果随时插进来、滚动位置要保持。全量重绘会闪，所以 pi 自己写了一个只更新变化行的终端 UI 库。</b></div>
+<p>3.2 万行手写终端 UI，是本仓库最容易被质疑的投入。判断它值不值，要先看它解决的问题有多特殊。</p>
+
+</section>
+
+<section id="s2">
+  <div class="sec-tag"><span class="cell"></span><span class="lab">§2 Evidence 代码实证</span></div>
+
+  <h2>它自称解决什么</h2>
+<div class="tpl">
+  <div class="tpl-head"><span class="path">packages/tui/README.md</span><span class="lines literal">原文 L3、L8–L9（并置）</span></div>
+  <pre><code>Minimal terminal UI framework with differential rendering and synchronized output
+for flicker-free interactive CLI applications.
+
+- **Differential Rendering**: Updates only changed lines or viewport rows
+- **Application-owned Scrolling**: Alternate-screen viewport supports mouse, trackpad, …</code></pre>
+  <div class="tpl-foot">两个关键词：<b>differential rendering</b>（只重画变化的行）与 <b>synchronized output</b>（终端的同步输出转义序列，让一帧原子地出现，不出现撕裂）。<a class="src" href="https://github.com/earendil-works/pi/blob/ac4ac9eaf69f2b01ca3af984a5c48f3b99b84278/packages/tui/README.md#L8" data-expect="**Differential Rendering**: Updates only changed lines or viewport rows">tui/README.md:8</a></div>
+</div>
+
+  <h2>零依赖</h2>
+<p><code>packages/tui</code> 的 <code>@earendil-works/*</code> 内部依赖为空，也不依赖 React。它不知道 LLM、agent、会话的存在——<a href="ch01.html">第 01 章</a>那张依赖图里唯一一个「叶子」级的大包。</p>
+<p>这带来一个实际结果：<b>它是这个仓库里最容易被单独拿走用的部分</b>，而且 <code>coding-agent</code> 的无头模式（<a href="ch14.html">第 14 章</a>）不需要 mock 掉任何 UI——直接不加载它就行。</p>
+
+  <h2>还有原生模块</h2>
+<p><code>packages/tui/native/darwin</code> 与 <code>native/win32</code> 各有一份 README——说明为了终端行为一致性，某些平台特性下沉到了原生层。这是「自己写 UI 库」成本的一部分：<b>你要为每个平台的终端怪癖负责。</b></p>
+
+</section>
+
+<section id="s3">
+  <div class="sec-tag"><span class="cell"></span><span class="lab">§3 Design 设计动机与权衡</span></div>
+
+  <h2>为什么现成方案不够</h2>
+<p>Ink（React for CLI）之类的方案针对的是「表单、进度条、列表」这类<b>结构化且更新局部</b>的 UI。agent 的输出形态不同：</p>
+<ul>
+  <li>一条 assistant 消息在流式生成中<b>不断变长</b>，可能跨几十行；</li>
+  <li>工具执行的进度会<b>插在中间</b>并原地更新；</li>
+  <li>用户可能同时在<b>滚动查看历史</b>，重绘不能把滚动位置弄丢；</li>
+  <li>更新频率是<b>每秒几十次</b>（token 级）。</li>
+</ul>
+<p>「只更新变化的行」+「一帧原子输出」正好对着这四条。用通用框架也能做，但你会花大量时间对抗它的重绘模型——而重绘模型正是这里唯一重要的东西。</p>
+
+  <h2>代价</h2>
+<p>3.2 万行 + 两个平台的原生模块 + 终端兼容性的长尾（<code>docs/terminal-setup.md</code>、<code>docs/tmux.md</code>、<code>docs/termux.md</code>、<code>docs/windows.md</code> 四份文档专门讲这个）。<b>这是一条只有在「终端体验就是产品」时才划算的路。</b></p>
+<p>对照 <a href="ch15.html">第 15 章</a>：pi 拒绝做权限系统的理由是「做不彻底不如不做」；这里的选择是反过来的——终端体验做不彻底也不如不做，所以做彻底。判据一致：<b>看这件事是不是产品的核心。</b></p>
+
+</section>
+
+<section id="s4">
+  <div class="sec-tag"><span class="cell"></span><span class="lab">§4 Limits 边界与失效条件</span></div>
+
+<ul>
+  <li><b>差分渲染的正确性依赖于对终端宽度与换行的精确建模。</b>宽字符（CJK）、emoji、组合字符都会让「这一行占几列」变得复杂，算错就会错位。本书未对该实现做正确性审计。</li>
+  <li><b>四份终端兼容文档本身是复杂度的证据。</b>tmux、Termux、Windows 各有专页，说明长尾问题真实存在。</li>
+  <li><b>自研意味着生态为零。</b>没有第三方组件库，任何新交互都要自己写——这也是扩展系统要暴露 TUI 组件 API（<a href="ch12.html">第 12 章</a>）的原因。</li>
+</ul>
+
+</section>
+
+<section id="s5">
+  <div class="sec-tag"><span class="cell"></span><span class="lab">§5 Takeaway 拿走什么</span></div>
+
+<ul class="takeaway">
+  <li><b>先判断「重绘模型」是不是你的核心问题，再决定自研还是用现成框架。</b>如果是，通用框架的抽象会成为主要对手而非帮手。
+    <span class="cond">适用条件：高频局部更新 + 用户可滚动。<b>普通 CLI 工具用现成方案。</b></span></li>
+  <li><b>渲染层保持零业务依赖。</b>这是无头模式、测试、和「把 UI 库单独开源」三件事的共同前提。
+    <span class="cond">适用条件：你要支持不止一种前端。</span></li>
+  <li><b>自研终端 UI 的真实成本包含平台原生模块和一堆兼容性文档。</b>预算时按「代码量 × 2」估。
+    <span class="cond">适用条件：跨 macOS / Linux / Windows / tmux。</span></li>
+</ul>
+
+</section>
+
+
+<section id="quiz">
+  <div class="sec-tag"><span class="cell"></span><span class="lab">§ Self-check 自测</span></div>
+  <h2>给场景，判断 pi 会怎么做</h2>
+
+<div class="quiz">
+
+<div class="q" data-answer="b">
+  <p class="qprompt"><span class="qtype">场景</span>你的 agent CLI 每秒几十次 token 级更新，用户还会往回滚动看历史。直接用 Ink（React for CLI）最先撞到的问题是什么？</p>
+  <div class="opts">
+    <button class="opt" type="button" data-ch="a">许可证不兼容</button>
+    <button class="opt" type="button" data-ch="b">重绘模型不匹配——通用框架优化的是局部结构化更新，不是流式长文本 + 滚动保持</button>
+    <button class="opt" type="button" data-ch="c">Ink 不支持 Windows</button>
+  </div>
+  <details><summary>看答案</summary><div class="answer">
+    <p><b>B。</b>pi 自研 TUI 的判据就是「重绘模型是不是你要解决的主要问题」。是——就自己写；不是——用现成的。</p>
+  </div></details>
+</div>
+
+<div class="q" data-answer="c">
+  <p class="qprompt"><span class="qtype">场景</span>把 <code>@earendil-works/pi-tui</code> 装进自己的项目，它会带上什么依赖？</p>
+  <div class="opts">
+    <button class="opt" type="button" data-ch="a"><code>pi-ai</code>——要渲染模型输出</button>
+    <button class="opt" type="button" data-ch="b">React——它是 React 渲染器</button>
+    <button class="opt" type="button" data-ch="c">零内部依赖，也不依赖 React</button>
+  </div>
+  <details><summary>看答案</summary><div class="answer">
+    <p><b>C。</b>tui 是依赖图里唯一的「叶子」级大包，不知道 LLM 的存在——这也是它最容易被单独复用的原因。</p>
+  </div></details>
+</div>
+
+</div>
+</section>
+
+<div class="next">
+  <a href="ch10.html">← 10 认证与账号</a>
+  <a href="ch12.html">12 扩展系统 →</a>
+</div>
+
+<div class="anchor-foot">
+基于 <a href="https://github.com/earendil-works/pi/tree/ac4ac9eaf69f2b01ca3af984a5c48f3b99b84278">earendil-works/pi @ <code>ac4ac9e</code></a>（2026-08-07 快照）。<br>
+仓库 commit 速度约 428/月，行号引用仅对该 SHA 有效。
+</div>
+
+</div>
+<script src="../assets/quiz.js" defer></script>
+</body>
+</html>

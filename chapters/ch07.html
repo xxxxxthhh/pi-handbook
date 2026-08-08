@@ -1,0 +1,230 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>07 会话持久化 · Pi 源码解读手册</title>
+<meta name="description" content="JSONL 追加日志、SQLite 后端、会话树与 fork/navigate">
+<link rel="icon" type="image/svg+xml" href="../assets/favicon.svg">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@500;700&family=Noto+Sans+SC:wght@400;500;700&family=IBM+Plex+Mono:wght@400;500&display=swap" rel="stylesheet" media="print" onload="this.media='all'">
+<noscript><link href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@500;700&family=Noto+Sans+SC:wght@400;500;700&family=IBM+Plex+Mono:wght@400;500&display=swap" rel="stylesheet"></noscript>
+<link rel="stylesheet" href="../assets/handbook.css">
+<script src="../assets/theme.js"></script>
+</head>
+<body>
+<button class="theme-toggle" type="button" aria-label="切换深色/浅色模式" title="切换深色/浅色模式">
+  <span class="sun" aria-hidden="true">☀️</span><span class="moon" aria-hidden="true">🌙</span>
+</button>
+<div class="wrap">
+<nav class="crumb"><a href="../index.html">← 目录</a> · <a href="../sources.html">溯源索引</a> · <a href="../drift.html">漂移记录</a></nav>
+
+<header class="ch">
+  <div class="bars" aria-hidden="true"><span class="l1"></span><span class="l2"></span><span class="l3"></span><span class="l4 f"></span></div>
+  <div class="kicker">Part II · Kernel — Session Persistence</div>
+  <h1>07 会话持久化
+    <span class="zh">会话不是一条链，是一棵树；而且现在有两个版本并存</span>
+  </h1>
+  <div class="meta">
+    <span class="status shipped">已发布</span>
+    <span>CLI 格式 <b>v3</b></span>
+    <span>新栈格式 <b>v4</b></span>
+    <span>后端 <b>3 个，同一套一致性测试</b></span>
+  </div>
+</header>
+
+<section id="s1">
+  <div class="sec-tag"><span class="cell"></span><span class="lab">§1 Mental Model 一句话心智模型</span></div>
+  <h2>先记住这一句</h2>
+
+<div class="oneliner"><b>pi 的会话是一个只追加的 entry 序列，每条 entry 带 <code>id</code> 和 <code>parentId</code>——所以它<em>物理上是日志、逻辑上是树</em>。你看到的对话，只是从某个叶子往根走的一条路径。</b></div>
+
+<p>这一个设计决定同时解释了三件事：</p>
+
+<ul>
+  <li><b><code>/tree</code> 能来回跳。</b>切分支就是换一个叶子指针，不需要改写任何已有数据。</li>
+  <li><b>压缩不可撤销但可回放。</b>压缩写的是一条新 entry（<a href="ch06.html">第 06 章</a>），旧消息物理上还在文件里，只是不在当前路径上。</li>
+  <li><b>崩溃最多丢最后一条。</b>追加写 + 每行一个 JSON，坏行不会污染前面的内容。</li>
+</ul>
+
+<p>要小心的是：<b>「会话文件里有」不等于「模型看得到」</b>。文件是全树，上下文是一条路径，而路径还要再过 <a href="ch05.html">第 05 章</a> 的两道闸。</p>
+
+</section>
+
+<section id="s2">
+  <div class="sec-tag"><span class="cell"></span><span class="lab">§2 Evidence 代码实证</span></div>
+  <h2>entry 的五个公共字段</h2>
+
+<div class="tpl">
+  <div class="tpl-head"><span class="path">packages/agent/src/harness/session/types.ts</span><span class="lines literal">原文 L14–L20</span></div>
+  <pre><code>export interface EntryBase {
+    type: string;
+    id: string;
+    seq: number; // shared sequence; read-side, storage-assigned
+    parentId: string | null; // storage-assigned: the appending lane's leaf
+    timestamp: number; // Unix ms, storage-assigned
+}</code></pre>
+  <div class="tpl-foot">三个字段标着 <b>storage-assigned</b>：<code>seq</code>、<code>parentId</code>、<code>timestamp</code> 都由存储层填，调用方给不了。<code>parentId</code> 取「当前 lane 的叶子」——树结构因此是追加的副产品，不需要调用方维护。</div>
+</div>
+
+<p>树的形状不由任何人显式声明：你在哪个叶子上追加，新 entry 的父就是谁。<a class="src" href="https://github.com/earendil-works/pi/blob/ac4ac9eaf69f2b01ca3af984a5c48f3b99b84278/packages/agent/src/harness/session/types.ts#L18" data-expect="parentId: string | null; // storage-assigned: the appending lane&#39;s leaf">types.ts:18</a> 分叉发生在「把叶子指针移回中间某个 entry，然后继续追加」的那一刻。</p>
+
+<h2>两个会话版本并存</h2>
+
+<p>CLI 写的是 v3：<a class="src" href="https://github.com/earendil-works/pi/blob/ac4ac9eaf69f2b01ca3af984a5c48f3b99b84278/packages/coding-agent/src/core/session-manager.ts#L30" data-expect="export const CURRENT_SESSION_VERSION = 3;">session-manager.ts:30</a></p>
+
+<p>新的 harness 栈写的是 v4，头部结构完全不同——多了 <code>parentSessionId</code>，并保留一个专为读 v3 而生的兼容字段：<a class="src" href="https://github.com/earendil-works/pi/blob/ac4ac9eaf69f2b01ca3af984a5c48f3b99b84278/packages/agent/src/harness/session/jsonl/types.ts#L47" data-expect="export interface JsonlV4Header {">jsonl/types.ts:47–57</a></p>
+
+<div class="tpl">
+  <div class="tpl-head"><span class="path">packages/agent/src/harness/session/jsonl/types.ts</span><span class="lines literal">原文 L47–L56</span></div>
+  <pre><code>export interface JsonlV4Header {
+    kind: "header";
+    version: 4;
+    id: string;
+    createdAt: number;
+    cwd: string;
+    parentSessionId?: string;
+    /** Preserved only when a v3 parent path could not be resolved to a session id. */
+    legacyParentSessionPath?: string;
+    metadata?: Record&lt;string, JsonValue&gt;;
+}</code></pre>
+  <div class="tpl-foot">那行注释是全书最省事的证据之一：v4 <b>要读 v3</b>，而且承认有读不动的情况（父会话路径解析不出 id 时，原样留着）。</div>
+</div>
+
+<p>这不是历史遗留，是<b>正在进行的迁移的当前状态</b>。harness-v2 设计文档把「旧 v3 会话必须能打开并恢复到 idle」列为<b>唯一</b>的向后兼容要求，其余格式和 API 全部允许破坏。<a class="src" href="https://github.com/earendil-works/pi/blob/ac4ac9eaf69f2b01ca3af984a5c48f3b99b84278/packages/agent/docs/harness-v2.md#L3" data-expect="Old coding-agent v3 JSONL sessions must open and restore idle.">harness-v2.md:3</a> 完整判定见 <a href="ch08.html">第 08 章</a>。</p>
+
+<h2>v4 日志里有两类东西：entry 和 record</h2>
+
+<p>JSONL 编解码器维护两个类型集合，一个是对话内容，一个是执行痕迹：<a class="src" href="https://github.com/earendil-works/pi/blob/ac4ac9eaf69f2b01ca3af984a5c48f3b99b84278/packages/agent/src/harness/session/jsonl/codec.ts#L7" data-expect="const ENTRY_TYPES = new Set&lt;Entry[&quot;type&quot;]&gt;([">codec.ts:7</a> <a class="src" href="https://github.com/earendil-works/pi/blob/ac4ac9eaf69f2b01ca3af984a5c48f3b99b84278/packages/agent/src/harness/session/jsonl/codec.ts#L16" data-expect="const RECORD_TYPES = new Set&lt;LaneRecord[&quot;type&quot;]&gt;([">codec.ts:16</a></p>
+
+<div class="tbl-scroll"><table><thead><tr><th></th><th>entry（7 种）</th><th>record（9 种）</th></tr></thead><tbody>
+<tr><td>是什么</td><td>对话本身：消息、模型切换、压缩点、分支摘要</td><td>执行过程：操作起止、步骤尝试、工具启动、队列变更、用量</td></tr>
+<tr><td>给谁看</td><td>模型 + 用户 + 回放</td><td><b>崩溃恢复</b></td></tr>
+<tr><td>v3 里有吗</td><td>有（对应 7 种 entry 的大部分）</td><td><b>没有</b>——这是 v4 新增的durability 底座</td></tr>
+</tbody></table></div>
+
+<p>record 的存在就是「durable run」的物理基础：<code>operation_started</code> 没有配对的 <code>operation_finished</code>，就说明进程死在中间。存储接口专门为此提供了 <code>findOpenOperations</code>，注释把恢复语义写得很死：<b>0 条 = idle，1 条 = 挂起，2 条 = 损坏</b>。<a class="src" href="https://github.com/earendil-works/pi/blob/ac4ac9eaf69f2b01ca3af984a5c48f3b99b84278/packages/agent/src/harness/session/types.ts#L317" data-expect="findOpenOperations(lane: string, options?: { limit?: number }): Promise&lt;OperationStartedRecord[]&gt;;">types.ts:317</a></p>
+
+<h2>三个后端，一套一致性测试</h2>
+
+<p>存储层有三个实现——内存、JSONL、SQLite——它们跑<b>同一个</b>一致性测试套件：<a class="src" href="https://github.com/earendil-works/pi/blob/ac4ac9eaf69f2b01ca3af984a5c48f3b99b84278/packages/agent/src/harness/session/testing/conformance.ts#L92" data-expect="export function createSessionBackendConformance(">conformance.ts:92</a></p>
+
+<div class="tbl-scroll"><table><thead><tr><th>后端</th><th>测试入口</th></tr></thead><tbody>
+<tr><td>memory</td><td><a class="src" href="https://github.com/earendil-works/pi/blob/ac4ac9eaf69f2b01ca3af984a5c48f3b99b84278/packages/agent/test/harness/session/memory.test.ts#L8" data-expect="const conformance = createSessionBackendConformance(() =&gt;">memory.test.ts:8</a></td></tr>
+<tr><td>JSONL</td><td><a class="src" href="https://github.com/earendil-works/pi/blob/ac4ac9eaf69f2b01ca3af984a5c48f3b99b84278/packages/agent/test/harness/session/jsonl.test.ts#L79" data-expect="const conformance = createSessionBackendConformance(async () =&gt; {">jsonl.test.ts:79</a></td></tr>
+<tr><td>SQLite</td><td><a class="src" href="https://github.com/earendil-works/pi/blob/ac4ac9eaf69f2b01ca3af984a5c48f3b99b84278/packages/session-backends/sqlite-node/test/conformance.test.ts#L24" data-expect="const conformance = createSessionBackendConformance(async () =&gt; {">sqlite-node/test/conformance.test.ts:24</a></td></tr>
+</tbody></table></div>
+
+<p>SQLite 后端被<b>刻意拆成独立包</b>，理由写在 agent 包的 README 里：核心包不该默认拖进运行时内建模块或原生 SQLite 依赖，后端接受一个「运行时特定的 SQLite 工厂」，从而允许未来的其它后端各自成包。<a class="src" href="https://github.com/earendil-works/pi/blob/ac4ac9eaf69f2b01ca3af984a5c48f3b99b84278/packages/agent/README.md#L13" data-expect="so the core package does not pull in runtime builtins or native SQLite dependencies by default">agent/README.md:13</a></p>
+
+<h2>fork 的两种作用域</h2>
+
+<div class="tpl">
+  <div class="tpl-head"><span class="path">packages/agent/src/harness/session/types.ts</span><span class="lines literal">原文 L359</span></div>
+  <pre><code>export type ForkOptions = { scope?: "branch"; entryId?: string; position?: "before" | "at" } | { scope: "tree" };</code></pre>
+  <div class="tpl-foot"><code>"branch"</code>：只复制到某个 entry 为止的那条路径。<code>"tree"</code>：整棵树。<code>position</code> 决定分叉点落在目标 entry 之前还是就在它上面。</div>
+</div>
+
+<p>两种作用域对应两种意图：「从这里另起一条路试试」用 branch，「把整个会话另存一份」用 tree。类型层面用联合类型强制二选一——选了 <code>tree</code> 就<b>不能</b>再指定 <code>entryId</code>，因为那没有意义。</p>
+
+</section>
+
+<section id="s3">
+  <div class="sec-tag"><span class="cell"></span><span class="lab">§3 Design 设计动机与权衡</span></div>
+  <h2>为什么是日志而不是「保存当前状态」</h2>
+
+<p>把当前对话序列化成一个 JSON 数组、每次覆盖写，实现更简单。选择追加日志换来的是：崩溃只丢最后一行而不是整个文件；写入是 O(1) 而不是 O(会话长度)；以及最关键的——<b>树结构几乎免费</b>。覆盖式存储要支持分支，就得自己实现版本管理。</p>
+
+<p>代价是读取要重放：打开一个长会话必须扫全文件再归约出当前路径。SQLite 后端存在的意义正在于此——同样的接口，把「扫全文件」换成索引查询。</p>
+
+<h2>为什么先做存储、后做执行</h2>
+
+<p>这是 harness-v2 迁移最值得学的一点：<b>durability 的底座（record 类型、三后端、一致性测试）已经全部落地并通过测试，而消费它的执行器还是空壳</b>（<a href="ch08.html">第 08 章</a>）。</p>
+
+<p>顺序是有道理的。存储契约一旦定错，上层全要重写；而执行器可以在稳定的存储契约上分步替换。先把「怎么记录」定死并用一套一致性测试锁在三个实现上，再谈「怎么执行」——这是自底向上重写的标准做法，也是它进度看起来慢的原因。</p>
+
+<h2>「唯一的兼容承诺」是一种成本控制</h2>
+
+<p>设计文档明说：只保证旧 v3 会话能打开并恢复到 idle，其余格式和 API 全部可破坏，<b>不写迁移、不做 schema 版本化、不提供转换路径</b>。<a class="src" href="https://github.com/earendil-works/pi/blob/ac4ac9eaf69f2b01ca3af984a5c48f3b99b84278/packages/agent/docs/harness-v2.md#L3" data-expect="We do not write migrations, schema versioning, or conversion paths for anything else.">harness-v2.md:3</a></p>
+
+<p>把兼容承诺压缩到一条，重写的自由度就最大化了。这个选择的前提是<b>用户数据只有一类值得保</b>（历史会话），其余（内部 API、SQLite schema、record 格式）都还没有外部依赖者——对一个一岁的项目成立，对一个五岁的项目多半不成立。</p>
+
+</section>
+
+<section id="s4">
+  <div class="sec-tag"><span class="cell"></span><span class="lab">§4 Limits 边界与失效条件</span></div>
+
+<ul>
+  <li><b>单写者假设。</b>设计文档把「一个会话同时被两个进程写」列为非目标，恢复逻辑<b>把单写者产生不了的状态直接当作损坏</b>。<a class="src" href="https://github.com/earendil-works/pi/blob/ac4ac9eaf69f2b01ca3af984a5c48f3b99b84278/packages/agent/docs/harness-v2.md#L32" data-expect="Restore treats states that a single writer cannot produce as corruption.">harness-v2.md:32</a> 在同一目录跑多个 pi 会话是<b>受支持的</b>（各自独立会话文件），但让两个进程写同一个会话不是。</li>
+  <li><b>长会话的读取成本随长度线性增长（JSONL 后端）。</b>树越大，重放越慢。SQLite 后端是给这个问题准备的答案，但 CLI 默认仍是 JSONL。</li>
+  <li><b>v3 不记录执行痕迹。</b>今天 CLI 写的会话文件里<b>没有 record</b>，所以即便 <code>AgentHarness</code> 完工，历史会话也无法「恢复未完成的 run」——只能恢复到 idle。这正是兼容承诺措辞里 "restore idle" 三个字的含义。</li>
+  <li><b>压缩后的旧消息仍占磁盘。</b>会话文件只增不减。压缩省的是 token，不是存储。</li>
+</ul>
+
+<p><b>检查过但未发现问题</b>：三个后端跑同一套一致性测试，且该套件覆盖 record 的追加、查询与非法查询拒绝（如 <code>limit: 0</code>、类型与 <code>operationKind</code> 冲突的组合）。<a class="src" href="https://github.com/earendil-works/pi/blob/ac4ac9eaf69f2b01ca3af984a5c48f3b99b84278/packages/agent/src/harness/session/testing/conformance.ts#L242" data-expect="await rejectsWithCode(session.findRecords({ limit: 0 }), &quot;invalid_query&quot;);">conformance.ts:242–244</a> 这类「三实现共用一套测试」的结构，是本章所有断言里我最有信心的部分。</p>
+
+</section>
+
+<section id="s5">
+  <div class="sec-tag"><span class="cell"></span><span class="lab">§5 Takeaway 拿走什么</span></div>
+
+<ul class="takeaway">
+  <li><b>会话存成带 <code>parentId</code> 的追加日志，树结构就是免费的。</b>分支、回退、fork 全都变成「移动叶子指针」，不需要任何版本管理机制。
+    <span class="cond">适用条件：你想支持对话分支或回退。<b>纯线性对话用数组更简单。</b></span></li>
+  <li><b>把「对话内容」和「执行痕迹」分成两类记录。</b>前者给模型和用户，后者给崩溃恢复。混在一起会让回放逻辑必须理解执行细节。
+    <span class="cond">适用条件：你要做崩溃恢复。<b>不做恢复就不需要 record，v3 就是这么活下来的。</b></span></li>
+  <li><b>多后端时，先写一套一致性测试，再写第二个实现。</b>pi 的三个后端共用一份 <code>createSessionBackendConformance</code>——这是「新后端不会悄悄少实现一半语义」的唯一保证。
+    <span class="cond">适用条件：存储后端可插拔。<b>单一后端时这套测试就是普通单测。</b></span></li>
+  <li><b>重写时把向后兼容压缩成一条明确的承诺，并写进设计文档。</b>「只保证旧会话能打开」比「尽量兼容」可执行得多——后者会在每个 PR 里重新争论一次。
+    <span class="cond">适用条件：外部依赖面还小。<b>已有大量下游 API 使用者时，这个自由度不存在。</b></span></li>
+</ul>
+
+</section>
+
+<section id="quiz">
+  <div class="sec-tag"><span class="cell"></span><span class="lab">§ Self-check 自测</span></div>
+
+<div class="quiz">
+
+<div class="q" data-answer="b">
+  <p class="qprompt"><span class="qtype">场景</span>一个会话压缩过 3 次，你用 <code>/tree</code> 跳回第一次压缩之前的某条消息。被压缩掉的那些原始消息还能看到吗？</p>
+  <div class="opts">
+    <button class="opt" type="button" data-ch="a">不能，压缩时已从文件删除</button>
+    <button class="opt" type="button" data-ch="b">能，它们仍在文件里，只是不在压缩后的那条路径上</button>
+    <button class="opt" type="button" data-ch="c">能，但要先手动解压 CompactionEntry</button>
+  </div>
+  <details><summary>看答案</summary><div class="answer">
+    <p><b>B。</b>会话文件只追加，压缩写的是一条新 entry。跳到压缩点之前的叶子，走的就是包含原始消息的那条路径。代价是磁盘占用不会因压缩而下降。</p>
+  </div></details>
+</div>
+
+<div class="q" data-answer="c">
+  <p class="qprompt"><span class="qtype">场景</span>假设 <code>AgentHarness</code> 明天全部实现完。你用今天的 pi CLI 产生的会话文件，能恢复一个「崩溃在半路的 run」吗？</p>
+  <div class="opts">
+    <button class="opt" type="button" data-ch="a">能，v3 里有完整的执行记录</button>
+    <button class="opt" type="button" data-ch="b">能，v4 会自动补全缺失的 record</button>
+    <button class="opt" type="button" data-ch="c">不能——v3 不含 record，只能恢复到 idle</button>
+  </div>
+  <details><summary>看答案</summary><div class="answer">
+    <p><b>C。</b>record（<code>operation_started</code> 等 9 种）是 v4 新增的。兼容承诺的原话就是 "must open and restore <b>idle</b>"。<a class="src" href="https://github.com/earendil-works/pi/blob/ac4ac9eaf69f2b01ca3af984a5c48f3b99b84278/packages/agent/docs/harness-v2.md#L3" data-expect="Old coding-agent v3 JSONL sessions must open and restore idle.">harness-v2.md:3</a></p>
+  </div></details>
+</div>
+
+</div>
+</section>
+
+<div class="next">
+  <a href="ch06.html">← 06 压缩</a>
+  <a href="ch08.html">08 Harness v2 →</a>
+</div>
+
+<div class="anchor-foot">
+基于 <a href="https://github.com/earendil-works/pi/tree/ac4ac9eaf69f2b01ca3af984a5c48f3b99b84278">earendil-works/pi @ <code>ac4ac9e</code></a>（2026-08-07 快照）。<br>
+仓库 commit 速度约 428/月，行号引用仅对该 SHA 有效。
+</div>
+
+</div>
+<script src="../assets/quiz.js" defer></script>
+</body>
+</html>

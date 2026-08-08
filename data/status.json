@@ -1,0 +1,240 @@
+{
+  "_note": "每章的实现状态判定与证据。SKELETON §6 定义取值；CLAUDE.md 校验器 #3 强制每章有条目。",
+  "_pinned_sha": "ac4ac9eaf69f2b01ca3af984a5c48f3b99b84278",
+  "_values": [
+    "已发布",
+    "部分落地",
+    "仅设计文档"
+  ],
+  "ch03": {
+    "status": "已发布",
+    "evidence": [
+      {
+        "path": "packages/coding-agent/src/core/sdk.ts",
+        "line": 294,
+        "expect": "agent = new Agent({",
+        "why": "coding-agent 的唯一 agent 构造点；全部模式（交互 / -p / json / rpc）都经此 SDK"
+      },
+      {
+        "path": "packages/agent/src/agent.ts",
+        "line": 414,
+        "expect": "await runAgentLoop(",
+        "why": "Agent.prompt() 直接进入本章描述的 runLoop"
+      }
+    ],
+    "negative_evidence": {
+      "claim": "全部 packages/*/src 中只有一处 new Agent(",
+      "command": "grep -rn 'new Agent(' packages/*/src/ | grep -v node_modules",
+      "result": "packages/agent/src/proxy.ts:92（JSDoc 注释内的示例）+ packages/coding-agent/src/core/sdk.ts:294（唯一真实构造）"
+    }
+  },
+  "ch08": {
+    "status": "部分落地",
+    "evidence": [
+      {
+        "path": "packages/agent/src/harness/agent-harness.ts",
+        "line": 356,
+        "expect": "new HarnessNotImplemented(operation)",
+        "why": "22 个 AgentLane 方法统一经 unavailable() 抛出；prompt / compact / navigateTree / resume / abort / steer / followUp 全在内"
+      },
+      {
+        "path": "packages/agent/src/harness/agent-harness.ts",
+        "line": 351,
+        "expect": "throw new HarnessNotImplemented(\"create.restore\")",
+        "why": "AgentHarness.create() 只在空 session 上成功；一旦存在 record 即抛错，即恢复路径未实现"
+      }
+    ],
+    "negative_evidence": {
+      "claim": "AgentHarness 在锚定 SHA 上没有生产消费者",
+      "command": "grep -rln 'AgentHarness' packages/*/src && grep -rn 'create-harness' packages/ --include='*.ts'",
+      "result": "packages/coding-agent/src/server/create-harness.ts 构造它（L151），但该文件只被自己的测试 packages/coding-agent/test/server/create-harness.test.ts:20 引用；该测试只断言 getter（getTools / getActiveTools / getStreamOptions / getRetryPolicy / getSteeringMode / getFollowUpMode），从不调用 prompt()。packages/evals/src/pi-harness.ts 中的 'Harness' 是 evals 框架自己的同名类型，与 AgentHarness 无关；packages/protocol/src/schemas.ts 仅在注释中提及 AgentHarnessPhase。"
+    }
+  },
+  "ch19": {
+    "status": "部分落地",
+    "evidence": [
+      {
+        "path": "packages/agent/docs/harness-v2.md",
+        "line": 3174,
+        "expect": "docs(agent): reserve",
+        "why": "认领协议只写在设计文档里，无 bot / workflow / 校验器实现；git log 中有 8 次 reserve/unreserve 提交为其真实使用的证据"
+      }
+    ]
+  },
+  "ch04": {
+    "status": "已发布",
+    "evidence": [
+      {
+        "path": "packages/agent/src/agent-loop.ts",
+        "line": 411,
+        "expect": "async function executeToolCalls(",
+        "why": "agent-loop 在每个 turn 内直接调用；随 ch03 的 Agent 路径一同发布"
+      }
+    ]
+  },
+  "ch05": {
+    "status": "已发布",
+    "evidence": [
+      {
+        "path": "packages/coding-agent/src/core/sdk.ts",
+        "line": 301,
+        "expect": "convertToLlm: convertToLlmWithBlockImages,",
+        "why": "coding-agent 在构造 Agent 时接线本章两道闸"
+      }
+    ]
+  },
+  "ch06": {
+    "status": "已发布",
+    "evidence": [
+      {
+        "path": "packages/coding-agent/src/core/agent-session.ts",
+        "line": 2049,
+        "expect": "if (shouldCompact(contextTokens, contextWindow, settings)) {",
+        "why": "CLI 的自动压缩触发点，走 coding-agent 自己那份 compaction 实现"
+      }
+    ]
+  },
+  "ch07": {
+    "status": "已发布",
+    "evidence": [
+      {
+        "path": "packages/coding-agent/src/core/session-manager.ts",
+        "line": 30,
+        "expect": "export const CURRENT_SESSION_VERSION = 3;",
+        "why": "CLI 实际写入的会话格式版本；v4 存储层同样已落地并有三后端一致性测试"
+      }
+    ]
+  },
+  "ch15": {
+    "status": "已发布",
+    "evidence": [
+      {
+        "path": "packages/coding-agent/docs/security.md",
+        "line": 35,
+        "expect": "This is intentional.",
+        "why": "无内建沙箱是当前已发布行为，docs/security.md 给出设计论证"
+      }
+    ]
+  },
+  "ch16": {
+    "status": "已发布",
+    "evidence": [
+      {
+        "path": "package.json",
+        "line": 18,
+        "expect": "npm run check:pinned-deps",
+        "why": "供应链门禁串在 npm run check 中，每次代码变更后强制执行"
+      }
+    ]
+  },
+  "ch17": {
+    "status": "已发布",
+    "evidence": [
+      {
+        "path": "AGENTS.md",
+        "line": 50,
+        "expect": "Multiple pi sessions may be running in this cwd at the same time",
+        "why": "仓库根目录的现行规则文件，agent 从 pi 根目录启动即自动读取"
+      }
+    ]
+  },
+  "ch18": {
+    "status": "已发布",
+    "evidence": [
+      {
+        "path": ".github/workflows/issue-gate.yml",
+        "line": 100,
+        "expect": "This issue was auto-closed.",
+        "why": "自动关闭 workflow 在仓库中实际启用"
+      }
+    ]
+  },
+  "ch01": {
+    "status": "已发布",
+    "evidence": [
+      {
+        "path": ".gitignore",
+        "line": 11,
+        "expect": "packages/ai/src/providers/data/",
+        "why": "全景数据均取自锚定 SHA 的工作树；模型数据不入库这一事实由 .gitignore 直接证明"
+      }
+    ]
+  },
+  "ch02": {
+    "status": "已发布",
+    "evidence": [
+      {
+        "path": "CONTRIBUTING.md",
+        "line": 9,
+        "expect": "it should be an extension",
+        "why": "核心最小化是仓库现行的、写进贡献指南的约束"
+      }
+    ]
+  },
+  "ch09": {
+    "status": "已发布",
+    "evidence": [
+      {
+        "path": "packages/ai/src/providers/anthropic.models.ts",
+        "line": 4,
+        "expect": "import values from \"./data/anthropic.json\"",
+        "why": "生成的 provider 模型清单是当前构建流程的一部分"
+      }
+    ]
+  },
+  "ch10": {
+    "status": "已发布",
+    "evidence": [
+      {
+        "path": "packages/agent/src/agent-loop.ts",
+        "line": 305,
+        "expect": "const resolvedApiKey =",
+        "why": "每次 LLM 调用重新解析认证是当前循环的实际行为"
+      }
+    ]
+  },
+  "ch11": {
+    "status": "已发布",
+    "evidence": [
+      {
+        "path": "packages/tui/README.md",
+        "line": 8,
+        "expect": "**Differential Rendering**",
+        "why": "TUI 包随 CLI 一同发布，交互模式即其运行时"
+      }
+    ]
+  },
+  "ch12": {
+    "status": "已发布",
+    "evidence": [
+      {
+        "path": "packages/coding-agent/src/core/extensions/types.ts",
+        "line": 1034,
+        "expect": "export type ExtensionEvent =",
+        "why": "扩展事件联合类型随 CLI 发布，25 个成员"
+      }
+    ]
+  },
+  "ch13": {
+    "status": "已发布",
+    "evidence": [
+      {
+        "path": ".pi/extensions/import-repro.ts",
+        "line": 2,
+        "expect": "Import a pi session shared as a gist by the issue-analysis CI workflow",
+        "why": "仓库自身在用的扩展，与 .github/workflows/issue-analysis.yml 构成闭环"
+      }
+    ]
+  },
+  "ch14": {
+    "status": "已发布",
+    "evidence": [
+      {
+        "path": "packages/coding-agent/docs/rpc.md",
+        "line": 3,
+        "expect": "RPC mode enables headless operation",
+        "why": "四条无头路径均为已发布 CLI 的现有模式"
+      }
+    ]
+  }
+}

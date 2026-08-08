@@ -1,0 +1,270 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>03 agent loop 逐行 · Pi 源码解读手册</title>
+<meta name="description" content="双层循环：内层收工具，外层等 follow-up；steering 插在哪一帧">
+<link rel="icon" type="image/svg+xml" href="../assets/favicon.svg">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@500;700&family=Noto+Sans+SC:wght@400;500;700&family=IBM+Plex+Mono:wght@400;500&display=swap" rel="stylesheet" media="print" onload="this.media='all'">
+<noscript><link href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@500;700&family=Noto+Sans+SC:wght@400;500;700&family=IBM+Plex+Mono:wght@400;500&display=swap" rel="stylesheet"></noscript>
+<link rel="stylesheet" href="../assets/handbook.css">
+<script src="../assets/theme.js"></script>
+</head>
+<body>
+<button class="theme-toggle" type="button" aria-label="切换深色/浅色模式" title="切换深色/浅色模式">
+  <span class="sun" aria-hidden="true">☀️</span><span class="moon" aria-hidden="true">🌙</span>
+</button>
+<div class="wrap">
+<nav class="crumb"><a href="../index.html">← 目录</a> · <a href="../sources.html">溯源索引</a> · <a href="../drift.html">漂移记录</a></nav>
+
+<header class="ch">
+  <div class="bars" aria-hidden="true"><span class="l1"></span><span class="l2"></span><span class="l3"></span><span class="l4 f"></span></div>
+  <div class="kicker">Part II · Kernel — The Agent Loop</div>
+  <h1>03 agent loop 逐行
+    <span class="zh">内层收工具，外层等 follow-up；steering 插在哪一帧</span>
+  </h1>
+  <div class="meta">
+    <span class="status shipped">已发布</span>
+    <span>主文件 <b>packages/agent/src/agent-loop.ts</b>（796 行）</span>
+    <span>运行时入口 <b>Agent 类</b></span>
+  </div>
+</header>
+
+<section id="s1">
+  <div class="sec-tag"><span class="cell"></span><span class="lab">§1 Mental Model 一句话心智模型</span></div>
+  <h2>先记住这一句</h2>
+
+<div class="oneliner"><b>pi 的 agent loop 是两层嵌套的 while：内层不断「调模型 → 跑工具 → 再调模型」直到模型不再要工具；外层只做一件事——在内层准备收工的那一刻，问一句「还有排队的活吗」。</b></div>
+
+<p>大部分 agent 实现只有一层循环：有工具调用就继续，没有就退出。pi 多出来的那一层不是为了跑工具，而是为了容纳「人在 agent 跑完之后又想追加一句」这件事，且不需要重新起一次 run、不需要重建上下文。</p>
+
+<p>由此派生出全章最需要分清的一对概念，它们的区别<b>完全由「在哪一层被轮询」决定</b>：</p>
+
+<ul>
+  <li><b>steering（插话）</b>——在内层每个 turn 结束后轮询。语义是「别停，但换个方向」。它插进正在进行的工作流，模型下一次调用就能看到。</li>
+  <li><b>follow-up（追加）</b>——只在内层退出、agent 本该结束时轮询。语义是「等你忙完，还有一件事」。</li>
+</ul>
+
+<p>同一条用户消息，进 steering 队列还是 follow-up 队列，决定的不是它「多久被处理」，而是它「会不会打断当前这批工具执行完之后的收尾判断」。这个区别在 UI 上通常表现为：跑着的时候敲回车是 steering，跑完之前敲回车是 follow-up。</p>
+
+</section>
+
+<section id="s2">
+  <div class="sec-tag"><span class="cell"></span><span class="lab">§2 Evidence 代码实证</span></div>
+  <h2>两层 while 的骨架</h2>
+
+<p>循环主体在 <code>runLoop()</code>，被 <code>agentLoop()</code> 与 <code>agentLoopContinue()</code> 共用。<a class="src" href="https://github.com/earendil-works/pi/blob/ac4ac9eaf69f2b01ca3af984a5c48f3b99b84278/packages/agent/src/agent-loop.ts#L155" data-expect="async function runLoop(">packages/agent/src/agent-loop.ts:155</a></p>
+
+<div class="tpl">
+  <div class="tpl-head"><span class="path">packages/agent/src/agent-loop.ts</span><span class="lines rewritten">改写自 L167–L274</span></div>
+  <pre><code>let pendingMessages = (await config.getSteeringMessages?.()) || [];  <span class="cm bone"># ① 循环开始前先捞一次</span>
+
+while (true) {                                          <span class="cm bone"># ② 外层：只为 follow-up 存在</span>
+    let hasMoreToolCalls = true;
+
+    while (hasMoreToolCalls || pendingMessages.length > 0) {   <span class="cm bone"># ③ 内层：工具 + steering</span>
+        <span class="om">… 注入 pendingMessages，清空队列 …</span>
+        const message = await streamAssistantResponse(…);       <span class="cm bone"># ④ 一次 LLM 调用</span>
+
+        if (message.stopReason === "error" || message.stopReason === "aborted") {
+            <span class="om">… emit turn_end / agent_end …</span>
+            return;                                     <span class="cm slot"># ⑤ 唯一的非正常出口</span>
+        }
+
+        const toolCalls = message.content.filter((c) =&gt; c.type === "toolCall");
+        hasMoreToolCalls = false;
+        if (toolCalls.length &gt; 0) {
+            const executedToolBatch =
+                message.stopReason === "length"
+                    ? await failToolCallsFromTruncatedMessage(toolCalls, emit)   <span class="cm slot"># ⑥ 截断保护</span>
+                    : await executeToolCalls(…);
+            hasMoreToolCalls = !executedToolBatch.terminate;
+            <span class="om">… 把 toolResults 推入 context …</span>
+        }
+        <span class="om">… emit turn_end；config.prepareNextTurn?.() 可换模型 / 换上下文 …</span>
+
+        if (await config.shouldStopAfterTurn?.({…})) {  <span class="cm slot"># ⑦ 优雅停机钩子</span>
+            <span class="om">… emit agent_end …</span>
+            return;
+        }
+        pendingMessages = (await config.getSteeringMessages?.()) || [];  <span class="cm bone"># ⑧ 每 turn 轮询 steering</span>
+    }
+
+    const followUpMessages = (await config.getFollowUpMessages?.()) || [];  <span class="cm bone"># ⑨ 仅此一处轮询 follow-up</span>
+    if (followUpMessages.length &gt; 0) { pendingMessages = followUpMessages; continue; }
+    break;
+}
+await emit({ type: "agent_end", messages: newMessages });</code></pre>
+  <div class="tpl-foot"><b>这是改写，不是摘录</b>——控制流结构与原文一一对应，但收紧了缩进、把 <code>shouldStopAfterTurn</code> 的九行调用压成一行、并用 <code>…</code> 代替了参数列表与 emit 调用。要逐字核对请开原文。<br>读法：<b>⑧ 和 ⑨ 的位置差</b>就是 steering 与 follow-up 的全部区别。⑧ 在内层每 turn 跑一次，⑨ 只在内层条件失败后跑一次。</div>
+</div>
+
+<h3>四个值得单独看的点</h3>
+
+<p><b>① 循环开始前的那次 steering 轮询</b>不是冗余。注释写的是「user may have typed while waiting」——用户在提交 prompt 到循环真正启动之间敲的字不会丢。<a class="src" href="https://github.com/earendil-works/pi/blob/ac4ac9eaf69f2b01ca3af984a5c48f3b99b84278/packages/agent/src/agent-loop.ts#L167" data-expect="getSteeringMessages">agent-loop.ts:167</a></p>
+
+<p><b>⑥ <code>stopReason === "length"</code> 时整批工具调用作废</b>，而不是执行能解析的那几个。原因写在 <code>failToolCallsFromTruncatedMessage</code> 的文档注释里：流式 tool-call 参数是用「best-effort JSON salvage parser」收尾的，所以一个被截断的消息可以产出<b>参数能解析、能通过 schema 校验、但内容悄悄不完整</b>的 tool call。<a class="src" href="https://github.com/earendil-works/pi/blob/ac4ac9eaf69f2b01ca3af984a5c48f3b99b84278/packages/agent/src/agent-loop.ts#L377" data-expect="best-effort JSON salvage parser">agent-loop.ts:377</a></p>
+
+<p>每个被作废的调用都会得到一条明确的错误结果，让模型知道要重发，而不是静默丢弃。<a class="src" href="https://github.com/earendil-works/pi/blob/ac4ac9eaf69f2b01ca3af984a5c48f3b99b84278/packages/agent/src/agent-loop.ts#L396" data-expect="was not executed">agent-loop.ts:396</a></p>
+
+<p><b><code>terminate</code> 的判定是「全票通过」制。</b>只有当这一批 tool result <em>每一条</em>都标了 <code>terminate: true</code>，循环才提前收工；混合批次照常继续。<a class="src" href="https://github.com/earendil-works/pi/blob/ac4ac9eaf69f2b01ca3af984a5c48f3b99b84278/packages/agent/src/agent-loop.ts#L582" data-expect="function shouldTerminateToolBatch">agent-loop.ts:582–584</a></p>
+
+<div class="tpl">
+  <div class="tpl-head"><span class="path">packages/agent/src/agent-loop.ts</span><span class="lines literal">原文 L582–L584</span></div>
+  <pre><code>function shouldTerminateToolBatch(finalizedCalls: FinalizedToolCallOutcome[]): boolean {
+    return finalizedCalls.length &gt; 0 &amp;&amp; finalizedCalls.every((finalized) =&gt; finalized.result.terminate === true);
+}</code></pre>
+</div>
+
+<p><b>⑦ <code>shouldStopAfterTurn</code> 是给压缩用的。</b>它在 <code>turn_end</code> 之后、轮询任何队列之前运行；返回 <code>true</code> 只是不再发起下一次 LLM 调用，<b>不中止流、不取消正在跑的工具、不改 stop reason</b>。上层用它实现「这一轮完了先压缩再继续」（见 <a href="ch06.html">第 06 章</a>）。<a class="src" href="https://github.com/earendil-works/pi/blob/ac4ac9eaf69f2b01ca3af984a5c48f3b99b84278/packages/agent/src/agent-loop.ts#L248" data-expect="config.shouldStopAfterTurn?.">agent-loop.ts:248–257</a></p>
+
+<h3>两个入口的一处不对称</h3>
+
+<p>循环有两个公开入口。<code>agentLoop()</code> 带新 prompt 起跑；<code>agentLoopContinue()</code> 从现有上下文续跑（用于报错后重试），要求最后一条消息是 <code>user</code> 或 <code>toolResult</code>。<a class="src" href="https://github.com/earendil-works/pi/blob/ac4ac9eaf69f2b01ca3af984a5c48f3b99b84278/packages/agent/src/agent-loop.ts#L64" data-expect="export function agentLoopContinue(">agent-loop.ts:64–76</a></p>
+
+<p>两者构造 <code>currentContext</code> 的方式不同：</p>
+
+<div class="tpl">
+  <div class="tpl-head"><span class="path">agent-loop.ts · 两处对照</span><span class="lines literal">原文 L104–L107 与 L136（并置，注释为本书所加）</span></div>
+  <pre><code><span class="cm bone">// runAgentLoop：messages 是新数组，调用方的数组不受影响</span>
+const currentContext: AgentContext = {
+    ...context,
+    messages: [...context.messages, ...prompts],
+};
+
+<span class="cm slot">// runAgentLoopContinue：浅拷贝，messages 仍是调用方那个数组的引用</span>
+const currentContext: AgentContext = { ...context };</code></pre>
+  <div class="tpl-foot">循环全程用 <code>push</code> 往 <code>currentContext.messages</code> 追加消息，流式期间还会把 partial assistant message 先塞进去再原地替换。</div>
+</div>
+
+<p>后果：直接调用低层 API 时，<code>agentLoopContinue()</code> 会<b>就地修改你传进去的 <code>messages</code> 数组</b>，<code>agentLoop()</code> 不会。<a class="src" href="https://github.com/earendil-works/pi/blob/ac4ac9eaf69f2b01ca3af984a5c48f3b99b84278/packages/agent/src/agent-loop.ts#L104" data-expect="const currentContext: AgentContext = {">agent-loop.ts:104–107</a> / <a class="src" href="https://github.com/earendil-works/pi/blob/ac4ac9eaf69f2b01ca3af984a5c48f3b99b84278/packages/agent/src/agent-loop.ts#L136" data-expect="{ ...context }">agent-loop.ts:136</a></p>
+
+<p><code>Agent</code> 类的使用者碰不到这个差异，因为它每次进循环前都 <code>slice()</code> 一份快照。<a class="src" href="https://github.com/earendil-works/pi/blob/ac4ac9eaf69f2b01ca3af984a5c48f3b99b84278/packages/agent/src/agent.ts#L437" data-expect="private createContextSnapshot(): AgentContext {">agent.ts:437–443</a> 但 <code>packages/agent/README.md</code> 的 "Low-Level API" 一节示范的正是直接把同一个 <code>context</code> 对象喂给两个函数，且没有提这处不对称。此条记入 <a href="../drift.html">漂移记录</a>。</p>
+
+<h3>「事件是观察者」这句话的机械含义</h3>
+
+<p>README 说低层 stream 是 observational，「不会等你的异步处理完成再继续」。代码里这句话对应一个具体事实：<code>runLoop</code> 确实 <code>await emit(...)</code>，但 <code>agentLoop()</code> 传进去的 sink 只是把事件 <code>push</code> 进一个 <code>EventStream</code>，而 <code>push</code> 是同步的、无返回值的入队。<a class="src" href="https://github.com/earendil-works/pi/blob/ac4ac9eaf69f2b01ca3af984a5c48f3b99b84278/packages/ai/src/utils/event-stream.ts#L21" data-expect="push(event: T): void {">event-stream.ts:21</a></p>
+
+<p>所以 <code>await</code> 等到的是「事件已入队」，不是「消费者已处理」——没有背压。<code>Agent</code> 类走的是另一条路：它把 <code>processEvents</code> 直接当 sink，里面先归约状态再<b>逐个 await 订阅者</b>，这才形成真正的屏障。<a class="src" href="https://github.com/earendil-works/pi/blob/ac4ac9eaf69f2b01ca3af984a5c48f3b99b84278/packages/agent/src/agent.ts#L588" data-expect="for (const listener of this.listeners) {">agent.ts:588–590</a></p>
+
+<p>这解释了 README 里那句「如果你需要消息处理成为工具 preflight 之前的屏障，请用 <code>Agent</code> 类」——屏障不是 <code>Agent</code> 额外加的，而是低层入口把 sink 换成了无背压的队列。</p>
+
+</section>
+
+<section id="s3">
+  <div class="sec-tag"><span class="cell"></span><span class="lab">§3 Design 设计动机与权衡</span></div>
+  <h2>为什么是两层，而不是一层加个标志位</h2>
+
+<p>一层循环也能表达 follow-up：把队列检查并进 <code>hasMoreToolCalls</code> 的条件即可。pi 没这么做，付出的代价是多一层缩进，换来的是<b>一个可命名的边界</b>——「agent 本该停下的那一刻」在代码里是一个具体位置（内层 while 的出口），而不是一个散布在布尔表达式里的隐含状态。</p>
+
+<p>这个边界的价值在扩展系统里兑现：<code>agent_settled</code> 之类的语义、以及 follow-up 与 steering 的差异化投递（<code>deliverAs: "steer" | "followUp" | "nextTurn"</code>），都需要指着这一行说「就是这里」。<a class="src" href="https://github.com/earendil-works/pi/blob/ac4ac9eaf69f2b01ca3af984a5c48f3b99b84278/packages/coding-agent/src/core/extensions/types.ts#L397" data-expect="deliverAs">extensions/types.ts:397</a> 详见 <a href="ch12.html">第 12 章</a>。</p>
+
+<h2>钩子的位置暴露了设计取向</h2>
+
+<p>循环里一共挂了五个可选回调：<code>getSteeringMessages</code>、<code>getFollowUpMessages</code>、<code>prepareNextTurn</code>、<code>shouldStopAfterTurn</code>，加上工具侧的 <code>beforeToolCall</code> / <code>afterToolCall</code>。它们的共同点是<b>都不改变循环的控制流形状</b>：没有一个能让循环跳过一个 turn、重排 tool call、或者回退到上一个 turn。</p>
+
+<p>能改的只有三类：<b>喂进去什么</b>（消息、上下文、模型、thinking level）、<b>要不要继续</b>（<code>shouldStopAfterTurn</code>、<code>terminate</code>）、<b>结果长什么样</b>（<code>afterToolCall</code>）。控制流本身是硬编码的。</p>
+
+<p>这是刻意的：<code>CONTRIBUTING.md</code> 写着「即便是给扩展用的 hook point 也要充分考虑和讨论，以免加进无法维护的臃肿和复杂交互」。<a class="src" href="https://github.com/earendil-works/pi/blob/ac4ac9eaf69f2b01ca3af984a5c48f3b99b84278/CONTRIBUTING.md#L11" data-expect="hook points for extensions">CONTRIBUTING.md:11</a> 代价是某些形态的扩展写不出来（比如「让模型重试上一个 turn 而不留痕」）；收益是循环的行为可以被一页纸讲完——本节就是证据。</p>
+
+<h2>与 harness-v2 的关系</h2>
+
+<p>上游正在写一个替代设计，把 run 变成可崩溃恢复的持久化操作（lanes / records / checkpoints）。本章描述的循环<b>不是</b>那个设计，也不会平滑演化成那个设计：harness-v2 把「循环」拆成了可单步驱动的 action 序列，控制流形状完全不同。</p>
+
+<p>截至锚定 SHA，跑在你机器上的仍是本章这个循环。判定依据与证据见 <a href="ch08.html">第 08 章</a>。</p>
+
+</section>
+
+<section id="s4">
+  <div class="sec-tag"><span class="cell"></span><span class="lab">§4 Limits 边界与失效条件</span></div>
+  <h2>这个循环在什么情况下不够用</h2>
+
+<ul>
+  <li><b>进程崩溃 = 整个 run 丢失。</b>循环状态（<code>pendingMessages</code>、<code>hasMoreToolCalls</code>、已执行到第几个 tool）全在栈上，没有任何一处落盘。工具已经产生的副作用（文件已改、命令已跑）留在磁盘上，但 agent 不知道它做过。这正是 harness-v2 要解决的问题，也是它值得一整章的原因。</li>
+  <li><b>没有 turn 上限。</b>循环里找不到最大轮数或最大 token 的硬约束；停机完全依赖模型不再发 tool call、<code>shouldStopAfterTurn</code> 返回 true、或外部 abort。跑飞的循环要靠上层拦。</li>
+  <li><b>steering 的时机粒度是「turn 之间」，不是「随时」。</b>注入发生在一批工具<b>全部执行完</b>之后。<a class="src" href="https://github.com/earendil-works/pi/blob/ac4ac9eaf69f2b01ca3af984a5c48f3b99b84278/packages/agent/src/agent-loop.ts#L259" data-expect="pendingMessages = (await config.getSteeringMessages">agent-loop.ts:259</a> 一个跑 10 分钟的 <code>bash</code> 命令期间敲的 steering 消息，要等它跑完才生效。想真正打断只能 <code>abort()</code>。</li>
+  <li><b><code>error</code> / <code>aborted</code> 的出口不走 <code>shouldStopAfterTurn</code>。</b>⑤ 处直接 return。<a class="src" href="https://github.com/earendil-works/pi/blob/ac4ac9eaf69f2b01ca3af984a5c48f3b99b84278/packages/agent/src/agent-loop.ts#L196" data-expect="stopReason === &quot;error&quot;">agent-loop.ts:196–200</a> 依赖该钩子做收尾（例如落盘、flush）的实现，在报错路径上不会被调用；这类工作必须挂在 <code>agent_end</code> 订阅者上。</li>
+</ul>
+
+<p><b>检查过但未发现问题的地方</b>：并行工具批次的事件顺序与持久化顺序不一致（事件按完成顺序、消息按 assistant 源顺序），这是文档明说的行为，且 <code>executeToolCallsParallel</code> 的实现与之一致——先并发拿结果，再按原顺序生成 toolResult 消息。<a class="src" href="https://github.com/earendil-works/pi/blob/ac4ac9eaf69f2b01ca3af984a5c48f3b99b84278/packages/agent/src/agent-loop.ts#L540" data-expect="orderedFinalizedCalls">agent-loop.ts:540–548</a></p>
+
+</section>
+
+<section id="s5">
+  <div class="sec-tag"><span class="cell"></span><span class="lab">§5 Takeaway 拿走什么</span></div>
+  <h2>如果你在造自己的 agent loop</h2>
+
+<ul class="takeaway">
+  <li><b>把「agent 本该停下的那一刻」做成代码里的一个位置。</b>不管你叫它 follow-up 轮询点还是别的，有了它，「跑完了」这个语义才能被扩展、UI 和持久化层共享。
+    <span class="cond">适用条件：你的 agent 有交互式使用场景。<b>纯批处理 agent 不需要这一层</b>，一层循环更清楚。</span></li>
+  <li><b>把 <code>stopReason === "length"</code> 当成整批 tool call 的毒丸。</b>流式参数的容错解析会让截断的调用看起来是合法的，这是最难查的一类 bug——工具执行了，参数少了一半，而且没有任何错误。
+    <span class="cond">适用条件：你用流式 tool call 且做了 JSON 容错。<b>如果参数只在完整消息上一次性解析，这个坑不存在。</b></span></li>
+  <li><b>提前收工的信号用「全票通过」而不是「一票否决」。</b>一个工具说「可以停了」不代表同批的其它工具的结果不需要模型看一眼。
+    <span class="cond">适用条件：允许并行 tool call。<b>串行单调用场景下两种语义等价。</b></span></li>
+  <li><b>区分「事件已发出」和「事件已被处理」，并在 API 文档里写明哪个入口给哪个保证。</b>pi 的两个入口给的保证不同，且这个差异只能从 sink 的实现看出来，从签名看不出来。
+    <span class="cond">适用条件：你的事件订阅者会做有副作用的事（落盘、渲染、审计）。<b>纯日志订阅者不在乎。</b></span></li>
+</ul>
+
+</section>
+
+<section id="quiz">
+  <div class="sec-tag"><span class="cell"></span><span class="lab">§ Self-check 自测</span></div>
+  <h2>给场景，判断 pi 会怎么做</h2>
+
+<div class="quiz">
+
+<div class="q" data-answer="b">
+  <p class="qprompt"><span class="qtype">场景</span>模型在一个 assistant message 里发了 3 个 tool call，其中第 2 个的 <code>execute()</code> 返回了 <code>terminate: true</code>，另外两个正常返回。循环接下来做什么？</p>
+  <div class="opts">
+    <button class="opt" type="button" data-ch="a">立即 <code>agent_end</code>，不再调模型</button>
+    <button class="opt" type="button" data-ch="b">照常把 3 条 toolResult 喂给模型，继续下一个 turn</button>
+    <button class="opt" type="button" data-ch="c">只丢弃第 2 条结果，其余继续</button>
+  </div>
+  <details><summary>看答案</summary><div class="answer">
+    <p><b>B。</b><code>shouldTerminateToolBatch</code> 要求 <code>every(...)</code>——一批里<b>全部</b>标了 <code>terminate</code> 才提前收工，混合批次照常继续。<a class="src" href="https://github.com/earendil-works/pi/blob/ac4ac9eaf69f2b01ca3af984a5c48f3b99b84278/packages/agent/src/agent-loop.ts#L582" data-expect="function shouldTerminateToolBatch">agent-loop.ts:582–584</a></p>
+  </div></details>
+</div>
+
+<div class="q" data-answer="c">
+  <p class="qprompt"><span class="qtype">场景</span>用户在 agent 正在跑一个耗时 3 分钟的 <code>bash</code> 命令时，输入了一条 steering 消息。模型什么时候能看到它？</p>
+  <div class="opts">
+    <button class="opt" type="button" data-ch="a">立刻——下一个流式 chunk 就带上</button>
+    <button class="opt" type="button" data-ch="b">bash 一超时就注入</button>
+    <button class="opt" type="button" data-ch="c">等这批工具全部执行完、当前 turn 结束之后</button>
+  </div>
+  <details><summary>看答案</summary><div class="answer">
+    <p><b>C。</b>steering 的轮询点在 turn 末尾（⑧），注入点在下一个 turn 开头。工具执行期间不检查队列。想真正打断只能 <code>abort()</code>。<a class="src" href="https://github.com/earendil-works/pi/blob/ac4ac9eaf69f2b01ca3af984a5c48f3b99b84278/packages/agent/src/agent-loop.ts#L259" data-expect="pendingMessages = (await config.getSteeringMessages">agent-loop.ts:259</a></p>
+  </div></details>
+</div>
+
+<div class="q" data-answer="a">
+  <p class="qprompt"><span class="qtype">场景</span>你在 <code>shouldStopAfterTurn</code> 里写了「把会话落盘」。某次 run 中 provider 报错，assistant message 的 <code>stopReason</code> 是 <code>error</code>。落盘会发生吗？</p>
+  <div class="opts">
+    <button class="opt" type="button" data-ch="a">不会——报错路径直接 return，绕过该钩子</button>
+    <button class="opt" type="button" data-ch="b">会，钩子在 <code>turn_end</code> 之后总是执行</button>
+    <button class="opt" type="button" data-ch="c">会，但延迟到下一次 run 开始时</button>
+  </div>
+  <details><summary>看答案</summary><div class="answer">
+    <p><b>A。</b><code>stopReason</code> 为 <code>error</code> 或 <code>aborted</code> 时，循环在 ⑤ 处 emit <code>turn_end</code> + <code>agent_end</code> 后直接 return，不到达 <code>shouldStopAfterTurn</code>。收尾工作应挂 <code>agent_end</code> 订阅者。<a class="src" href="https://github.com/earendil-works/pi/blob/ac4ac9eaf69f2b01ca3af984a5c48f3b99b84278/packages/agent/src/agent-loop.ts#L196" data-expect="stopReason === &quot;error&quot;">agent-loop.ts:196–200</a></p>
+  </div></details>
+</div>
+
+</div>
+</section>
+
+<div class="next">
+  <a href="ch02.html">← 02 三层边界</a>
+  <a href="ch04.html">04 工具执行 →</a>
+</div>
+
+<div class="anchor-foot">
+基于 <a href="https://github.com/earendil-works/pi/tree/ac4ac9eaf69f2b01ca3af984a5c48f3b99b84278">earendil-works/pi @ <code>ac4ac9e</code></a>（2026-08-07 快照）。<br>
+仓库 commit 速度约 428/月，行号引用仅对该 SHA 有效。
+</div>
+
+</div>
+<script src="../assets/quiz.js" defer></script>
+</body>
+</html>

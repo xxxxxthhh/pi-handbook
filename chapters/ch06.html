@@ -1,0 +1,230 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>06 压缩 · Pi 源码解读手册</title>
+<meta name="description" content="何时触发、切在哪、branch summarization，以及压缩本身要花的那次调用">
+<link rel="icon" type="image/svg+xml" href="../assets/favicon.svg">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@500;700&family=Noto+Sans+SC:wght@400;500;700&family=IBM+Plex+Mono:wght@400;500&display=swap" rel="stylesheet" media="print" onload="this.media='all'">
+<noscript><link href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@500;700&family=Noto+Sans+SC:wght@400;500;700&family=IBM+Plex+Mono:wght@400;500&display=swap" rel="stylesheet"></noscript>
+<link rel="stylesheet" href="../assets/handbook.css">
+<script src="../assets/theme.js"></script>
+</head>
+<body>
+<button class="theme-toggle" type="button" aria-label="切换深色/浅色模式" title="切换深色/浅色模式">
+  <span class="sun" aria-hidden="true">☀️</span><span class="moon" aria-hidden="true">🌙</span>
+</button>
+<div class="wrap">
+<nav class="crumb"><a href="../index.html">← 目录</a> · <a href="../sources.html">溯源索引</a> · <a href="../drift.html">漂移记录</a></nav>
+
+<header class="ch">
+  <div class="bars" aria-hidden="true"><span class="l1"></span><span class="l2"></span><span class="l3"></span><span class="l4 f"></span></div>
+  <div class="kicker">Part II · Kernel — Compaction</div>
+  <h1>06 压缩
+    <span class="zh">切在哪一刀，比切掉多少更重要</span>
+  </h1>
+  <div class="meta">
+    <span class="status shipped">已发布</span>
+    <span>触发线 <b>window − 16384</b></span>
+    <span>保留 <b>≈20000 token</b></span>
+    <span>同名实现 <b>两份</b></span>
+  </div>
+</header>
+
+<section id="s1">
+  <div class="sec-tag"><span class="cell"></span><span class="lab">§1 Mental Model 一句话心智模型</span></div>
+  <h2>先记住这一句</h2>
+
+<div class="oneliner"><b>压缩不是「删掉旧消息」，是「在一个<em>合法的切点</em>上把前半段换成一段摘要」。切点的合法性由一条硬规则定义：<b>永远不能切在 toolResult 上</b>——它必须紧跟自己的 tool call。</b></div>
+
+<p>把这条规则记住，压缩的大部分行为就都能推出来。从最新消息往回累加 token，攒够 <code>keepRecentTokens</code> 就想切；但切口只能落在「模型视角下的一条完整消息边界」上，于是实际切点会往前滑到最近的合法位置。只要待压缩的历史本身超过这个预算，实际保留量就总是 ≥ 目标值，而不是恰好等于。</p>
+
+<p>还有两件事值得先知道：</p>
+
+<ul>
+  <li><b>压缩自己要花一次 LLM 调用</b>去生成摘要。上下文快满的时候做压缩，等于在最贵的时刻再买一次单。</li>
+  <li><b>压缩的产物写进会话文件</b>（一条 <code>CompactionEntry</code>），不是运行时的临时裁剪。这意味着压缩不可撤销，也意味着它可回放。</li>
+</ul>
+
+</section>
+
+<section id="s2">
+  <div class="sec-tag"><span class="cell"></span><span class="lab">§2 Evidence 代码实证</span></div>
+  <h2>触发线：一个减法</h2>
+
+<div class="tpl">
+  <div class="tpl-head"><span class="path">packages/coding-agent/src/core/compaction/compaction.ts</span><span class="lines literal">原文 L235–L238</span></div>
+  <pre><code>export function shouldCompact(contextTokens: number, contextWindow: number, settings: CompactionSettings): boolean {
+    if (!settings.enabled) return false;
+    return contextTokens &gt; contextWindow - settings.reserveTokens;
+}</code></pre>
+  <div class="tpl-foot">默认 <code>reserveTokens: 16384</code>、<code>keepRecentTokens: 20000</code>。<a class="src" href="https://github.com/earendil-works/pi/blob/ac4ac9eaf69f2b01ca3af984a5c48f3b99b84278/packages/coding-agent/src/core/compaction/compaction.ts#L132" data-expect="export const DEFAULT_COMPACTION_SETTINGS: CompactionSettings = {">compaction.ts:132–136</a> 留出的 16k 是给模型<b>回答</b>用的，不是安全余量。</div>
+</div>
+
+<p>触发点有两个，语义不同：</p>
+
+<div class="tbl-scroll"><table><thead><tr><th>reason</th><th>时机</th><th>位置</th></tr></thead><tbody>
+<tr><td><code>threshold</code></td><td>turn 结束后主动检查，<b>还没撞墙</b></td><td><a class="src" href="https://github.com/earendil-works/pi/blob/ac4ac9eaf69f2b01ca3af984a5c48f3b99b84278/packages/coding-agent/src/core/agent-session.ts#L2049" data-expect="if (shouldCompact(contextTokens, contextWindow, settings)) {">agent-session.ts:2049</a></td></tr>
+<tr><td><code>overflow</code></td><td>provider <b>已经报了上下文溢出</b>之后补救</td><td><a class="src" href="https://github.com/earendil-works/pi/blob/ac4ac9eaf69f2b01ca3af984a5c48f3b99b84278/packages/coding-agent/src/core/agent-session.ts#L1998" data-expect="return await this._runAutoCompaction(&quot;overflow&quot;, false);">agent-session.ts:1998</a></td></tr>
+<tr><td><code>manual</code></td><td>用户敲 <code>/compact</code></td><td>—</td></tr>
+</tbody></table></div>
+
+<p><code>threshold</code> 这条路正是 <a href="ch03.html">第 03 章</a> §2 里 <code>shouldStopAfterTurn</code> 钩子的用途：让循环在 turn 边界优雅停下，压缩完再继续，而不是在 LLM 调用中途处理。</p>
+
+<h2>切点规则：toolResult 是禁区</h2>
+
+<p>合法切点由一个 role 白名单决定，<code>toolResult</code> 是唯一被排除的：<a class="src" href="https://github.com/earendil-works/pi/blob/ac4ac9eaf69f2b01ca3af984a5c48f3b99b84278/packages/coding-agent/src/core/compaction/compaction.ts#L308" data-expect="function isCutPointMessage(message: AgentMessage): boolean {">compaction.ts:308–320</a></p>
+
+<div class="tpl">
+  <div class="tpl-head"><span class="path">packages/coding-agent/src/core/compaction/compaction.ts</span><span class="lines literal">原文 L308–L319</span></div>
+  <pre><code>function isCutPointMessage(message: AgentMessage): boolean {
+    switch (message.role) {
+        case "user":
+        case "assistant":
+        case "bashExecution":
+        case "custom":
+        case "branchSummary":
+        case "compactionSummary":
+            return true;
+        case "toolResult":
+            return false;
+    }</code></pre>
+  <div class="tpl-foot">源码注释说得更直白：<span class="cm">“Never cut at tool results (they must follow their tool call).”</span> <a class="src" href="https://github.com/earendil-works/pi/blob/ac4ac9eaf69f2b01ca3af984a5c48f3b99b84278/packages/coding-agent/src/core/compaction/compaction.ts#L347" data-expect="Never cut at tool results">compaction.ts:347</a></div>
+</div>
+
+<p>原因是协议级的：所有 provider 都要求 <code>toolResult</code> 前面必须有对应的 tool call。切在 toolResult 上会产出一个「有结果没调用」的孤儿，请求直接被拒。<b>这是压缩实现里唯一一条不能违反的硬约束</b>，其余都是启发式。</p>
+
+<h2>切点搜索：往回累加，再往前滑</h2>
+
+<p><code>findCutPoint</code> 从最新往回累加 token 估算，攒够 <code>keepRecentTokens</code> 后，取<b>第一个下标 ≥ 当前位置的合法切点</b>。<a class="src" href="https://github.com/earendil-works/pi/blob/ac4ac9eaf69f2b01ca3af984a5c48f3b99b84278/packages/coding-agent/src/core/compaction/compaction.ts#L403" data-expect="export function findCutPoint(">compaction.ts:403</a></p>
+
+<p>结果里带一个 <code>isSplitTurn</code> 标志：切点如果不是 user 消息，说明这一刀切进了某个 turn 的中间（比如切在 assistant 上，它的 tool results 跟在后面）。此时会额外记下该 turn 的起始位置，供摘要生成时补上「这个 turn 是从哪开始的」。</p>
+
+<p>换句话说：<b>token 预算决定「大概切在哪」，消息结构决定「实际切在哪」，两者不一致时结构赢。</b></p>
+
+<h2>摘要是一次真实的 LLM 调用</h2>
+
+<p><code>prepareCompaction</code> 算出切点与待摘要区间，<code>compact</code> 发起调用并把结果写成 <code>CompactionEntry</code>。<a class="src" href="https://github.com/earendil-works/pi/blob/ac4ac9eaf69f2b01ca3af984a5c48f3b99b84278/packages/coding-agent/src/core/compaction/compaction.ts#L710" data-expect="export function prepareCompaction(">compaction.ts:710</a> <a class="src" href="https://github.com/earendil-works/pi/blob/ac4ac9eaf69f2b01ca3af984a5c48f3b99b84278/packages/coding-agent/src/core/compaction/compaction.ts#L817" data-expect="export async function compact(">compaction.ts:817</a></p>
+
+<p>上游文档补了一条实现细节，代码之外看不出来：压缩与分支摘要的请求<b>使用全新的路由 session id，并在 provider 支持时禁用 prompt-cache 写入</b>——这类一次性 prompt 不太可能被复用，写缓存是净亏。<a class="src" href="https://github.com/earendil-works/pi/blob/ac4ac9eaf69f2b01ca3af984a5c48f3b99b84278/packages/coding-agent/docs/compaction.md#L23" data-expect="fresh routing session IDs">compaction.md:23</a></p>
+
+<p>摘要生成时会把<b>上一次的摘要作为迭代上下文</b>传进去，所以多次压缩后的摘要是层层叠加而非各自独立的。代价是误差也会层层叠加：第三次压缩的摘要，是「对『对摘要的摘要』的摘要」。</p>
+
+<h2>同名函数，两份实现</h2>
+
+<div class="drift">
+  <div class="dh">漂移 d3 · 详见 <a href="../drift.html">漂移记录</a></div>
+  <dl>
+    <dt>文档说</dt>
+    <dd><code>docs/compaction.md</code> 的 Source files 只列 <code>packages/coding-agent/src/core/compaction/*</code>。<a class="src" href="https://github.com/earendil-works/pi/blob/ac4ac9eaf69f2b01ca3af984a5c48f3b99b84278/packages/coding-agent/docs/compaction.md#L6" data-expect="packages/coding-agent/src/core/compaction/compaction.ts">compaction.md:6</a></dd>
+    <dt>代码是</dt>
+    <dd><code>packages/agent</code> 另有一份 <code>harness/compaction/compaction.ts</code>（848 行），从 <code>@earendil-works/pi-agent-core</code> 公开导出同名的 <code>compact</code> / <code>shouldCompact</code> / <code>findCutPoint</code>。<a class="src" href="https://github.com/earendil-works/pi/blob/ac4ac9eaf69f2b01ca3af984a5c48f3b99b84278/packages/agent/src/index.ts#L75" data-expect="} from &quot;./harness/compaction/compaction.ts&quot;;">agent/src/index.ts:75</a></dd>
+    <dt>差在哪</dt>
+    <dd>两份文件 diff 达 880 行。切点判定的结构就不同：CLI 那份把判定抽成 <code>isCutPointMessage</code> 谓词并作用于「entry 展开后的消息」，agent 那份是直接对 entry 类型做内联 switch。<a class="src" href="https://github.com/earendil-works/pi/blob/ac4ac9eaf69f2b01ca3af984a5c48f3b99b84278/packages/agent/src/harness/compaction/compaction.ts#L312" data-expect="function findValidCutPoints(entries: Entry[], startIndex: number, endIndex: number): number[] {">harness/compaction/compaction.ts:312</a></dd>
+    <dt>影响</dt>
+    <dd>读文档找源码的人看到 CLI 那份；用 <code>@earendil-works/pi-agent-core</code> 写代码的人调到另一份。文档无任何提示。这是 harness-v2 迁移期的中间态（见 <a href="ch08.html">第 08 章</a>），但对库使用者是<b>当下的事实</b>。</dd>
+  </dl>
+</div>
+
+</section>
+
+<section id="s3">
+  <div class="sec-tag"><span class="cell"></span><span class="lab">§3 Design 设计动机与权衡</span></div>
+  <h2>为什么压缩要落盘，而不是每次请求临时裁剪</h2>
+
+<p>临时裁剪更灵活：换模型、换 window 就重算一次。pi 选择把摘要写成会话条目，换来三样东西：摘要只生成一次（省钱）、会话可精确回放、<code>/tree</code> 导航时摘要是树上的一个节点而不是某次请求的副产品。</p>
+
+<p>代价是<b>不可逆</b>。<code>CompactionEntry</code> 一旦写入，原始消息虽然还在文件里，但重建上下文时会从 <code>firstKeptEntryId</code> 起算。换到一个 window 大得多的模型，也不会自动「解压」回去。</p>
+
+<h2>threshold 与 overflow：两条路说明了什么</h2>
+
+<p>有了主动阈值检查，为什么还需要溢出后的补救？因为 <code>contextTokens</code> 来自<b>上一次 provider 返回的 usage</b>，是滞后一拍的估算。一个 turn 里如果工具返回了个 200KB 的文件，这一拍的增量就足以越过窗口，而阈值检查还在用上一拍的数字。</p>
+
+<p>所以 <code>overflow</code> 不是冗余，是承认「token 计数在客户端永远是估算」这一事实后的必要兜底。值得注意的是它<b>只在不会重试时才触发压缩</b>：<a class="src" href="https://github.com/earendil-works/pi/blob/ac4ac9eaf69f2b01ca3af984a5c48f3b99b84278/packages/coding-agent/src/core/agent-session.ts#L1997" data-expect="if (!willRetry) {">agent-session.ts:1997–2000</a> 注释解释了原因——如果 assistant 已经答完（<code>stopReason === "stop"</code>），就该压缩但不能重试，因为 <code>agent.continue()</code> 无法从一条 assistant 消息续跑（正是 <a href="ch03.html">第 03 章</a> 里 <code>agentLoopContinue</code> 的那条前置约束）。</p>
+
+<h2>切点启发式的隐含假设</h2>
+
+<p>「保留最近 20000 token」假设<b>近期消息比早期消息更有价值</b>。对编码任务大体成立（刚读的文件、刚跑的测试最相关），但有一类情况明显不成立：任务目标写在第一条 user 消息里。pi 的对策是让摘要承载这类信息，而不是给早期消息特殊豁免——<b>没有任何「pin 住某条消息」的机制</b>。</p>
+
+</section>
+
+<section id="s4">
+  <div class="sec-tag"><span class="cell"></span><span class="lab">§4 Limits 边界与失效条件</span></div>
+
+<ul>
+  <li><b>压缩要花一次调用，而且是在上下文最满的时候。</b>摘要请求本身也要带上待摘要的全部内容。上下文越大，这次调用越贵。</li>
+  <li><b>没有「摘要失败」的降级路径写在压缩逻辑里。</b>如果生成摘要的那次调用失败，压缩不成立，原上下文照旧——于是下一个 turn 大概率又撞线。</li>
+  <li><b>迭代摘要会累积漂移。</b>长会话经过 N 次压缩后，最早的信息已被摘要 N 次。没有机制检测「摘要与原文的偏离」。</li>
+  <li><b>无法固定保留某条消息。</b>任务描述、约束、用户偏好，都可能在某次压缩中被折进摘要，能否幸存取决于摘要模型的判断。</li>
+  <li><b><code>keepRecentTokens</code> 是下限不是上限（在历史足够长时）。</b>切点往前滑之后保留量只会更多；历史本身不足 20000 token 的小窗口场景是唯一例外——那时能保留的就是全部。如果一个 turn 本身就超过 20000 token（比如工具吐了个巨大文件），那一整个 turn 都保留。</li>
+</ul>
+
+<p><b>检查过但未发现问题</b>：<code>findValidCutPoints</code> 显式跳过 <code>compaction</code> 类型的 entry（<a class="src" href="https://github.com/earendil-works/pi/blob/ac4ac9eaf69f2b01ca3af984a5c48f3b99b84278/packages/coding-agent/src/core/compaction/compaction.ts#L355" data-expect="if (entry.type === &quot;compaction&quot;) {">compaction.ts:355–357</a>），所以不会出现「切在上一次压缩点上」导致摘要嵌套错乱的情况。</p>
+
+</section>
+
+<section id="s5">
+  <div class="sec-tag"><span class="cell"></span><span class="lab">§5 Takeaway 拿走什么</span></div>
+
+<ul class="takeaway">
+  <li><b>先确定「哪些位置切了不会违反协议」，再谈保留多少 token。</b>切点合法性是硬约束，token 预算是软目标；实现顺序反过来就会产出被 provider 拒绝的请求。
+    <span class="cond">适用条件：所有会做上下文裁剪的 agent。<b>toolResult 必须紧跟 tool call 是全 provider 通用的。</b></span></li>
+  <li><b>主动阈值 + 溢出兜底，两条都要。</b>客户端的 token 计数永远滞后一拍，单靠阈值必然偶尔撞墙。
+    <span class="cond">适用条件：工具可能返回不可预测大小的输出。<b>输出规模可控时阈值就够。</b></span></li>
+  <li><b>把摘要写进持久化历史，而不是每次请求临时算。</b>省下重复的摘要调用，换来可回放性；代价是不可逆。
+    <span class="cond">代价：<b>换到更大 window 的模型不会自动恢复被压缩的内容。</b>如果你的用户常换模型，权衡会反过来。</span></li>
+  <li><b>压缩请求禁用 prompt-cache 写入。</b>一次性 prompt 写缓存是净亏——这个细节只写在文档里，代码里看不出来。
+    <span class="cond">适用条件：provider 支持显式控制 cache 写入。</span></li>
+</ul>
+
+</section>
+
+<section id="quiz">
+  <div class="sec-tag"><span class="cell"></span><span class="lab">§ Self-check 自测</span></div>
+
+<div class="quiz">
+
+<div class="q" data-answer="c">
+  <p class="qprompt"><span class="qtype">场景</span>往回累加到第 42 条时刚好攒够 20000 token，而第 42 条是一条 <code>toolResult</code>。切点落在哪？</p>
+  <div class="opts">
+    <button class="opt" type="button" data-ch="a">就切在第 42 条</button>
+    <button class="opt" type="button" data-ch="b">切在第 43 条（下一条）</button>
+    <button class="opt" type="button" data-ch="c">滑到 ≥42 的第一个合法切点，保留量因此多于 20000</button>
+  </div>
+  <details><summary>看答案</summary><div class="answer">
+    <p><b>C。</b><code>toolResult</code> 不是合法切点，<code>findCutPoint</code> 取第一个下标 ≥ 当前位置的 <code>cutPoints</code> 元素。<code>keepRecentTokens</code> 是下限。<a class="src" href="https://github.com/earendil-works/pi/blob/ac4ac9eaf69f2b01ca3af984a5c48f3b99b84278/packages/coding-agent/src/core/compaction/compaction.ts#L308" data-expect="function isCutPointMessage(message: AgentMessage): boolean {">compaction.ts:308</a></p>
+  </div></details>
+</div>
+
+<div class="q" data-answer="a">
+  <p class="qprompt"><span class="qtype">场景</span>你 <code>import { compact } from "@earendil-works/pi-agent-core"</code>，然后照 <code>docs/compaction.md</code> 读源码理解它的行为。有问题吗？</p>
+  <div class="opts">
+    <button class="opt" type="button" data-ch="a">有——文档描述的是 coding-agent 那份，你调的是 agent 包里的另一份</button>
+    <button class="opt" type="button" data-ch="b">没问题，两者是同一个文件的重导出</button>
+    <button class="opt" type="button" data-ch="c">没问题，agent 包只导出类型</button>
+  </div>
+  <details><summary>看答案</summary><div class="answer">
+    <p><b>A。</b>两份独立实现，diff 880 行，切点判定的结构都不同。文档的 Source files 一节只列 CLI 那份。<a class="src" href="https://github.com/earendil-works/pi/blob/ac4ac9eaf69f2b01ca3af984a5c48f3b99b84278/packages/agent/src/index.ts#L75" data-expect="} from &quot;./harness/compaction/compaction.ts&quot;;">agent/src/index.ts:75</a></p>
+  </div></details>
+</div>
+
+</div>
+</section>
+
+<div class="next">
+  <a href="ch05.html">← 05 上下文管道</a>
+  <a href="ch07.html">07 会话持久化 →</a>
+</div>
+
+<div class="anchor-foot">
+基于 <a href="https://github.com/earendil-works/pi/tree/ac4ac9eaf69f2b01ca3af984a5c48f3b99b84278">earendil-works/pi @ <code>ac4ac9e</code></a>（2026-08-07 快照）。<br>
+仓库 commit 速度约 428/月，行号引用仅对该 SHA 有效。
+</div>
+
+</div>
+<script src="../assets/quiz.js" defer></script>
+</body>
+</html>

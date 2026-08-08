@@ -1,0 +1,162 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>12 扩展系统 · Pi 源码解读手册</title>
+<meta name="description" content="事件 + 命令 + 渲染器 + 工具四类接入点；扩展能改什么、不能改什么">
+<link rel="icon" type="image/svg+xml" href="../assets/favicon.svg">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@500;700&family=Noto+Sans+SC:wght@400;500;700&family=IBM+Plex+Mono:wght@400;500&display=swap" rel="stylesheet" media="print" onload="this.media='all'">
+<noscript><link href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@500;700&family=Noto+Sans+SC:wght@400;500;700&family=IBM+Plex+Mono:wght@400;500&display=swap" rel="stylesheet"></noscript>
+<link rel="stylesheet" href="../assets/handbook.css">
+<script src="../assets/theme.js"></script>
+</head>
+<body>
+<button class="theme-toggle" type="button" aria-label="切换深色/浅色模式" title="切换深色/浅色模式">
+  <span class="sun" aria-hidden="true">☀️</span><span class="moon" aria-hidden="true">🌙</span>
+</button>
+<div class="wrap">
+<nav class="crumb"><a href="../index.html">← 目录</a> · <a href="../sources.html">溯源索引</a> · <a href="../drift.html">漂移记录</a></nav>
+
+<header class="ch">
+  <div class="bars" aria-hidden="true"><span class="l1"></span><span class="l2"></span><span class="l3"></span><span class="l4 f"></span></div>
+  <div class="kicker">Part IV · Interface &amp; Extensions</div>
+  <h1>12 扩展系统
+    <span class="zh">同进程、全权限、能覆盖内建工具——这是能力也是代价</span>
+  </h1>
+  <div class="meta"><span class="status shipped">已发布</span><span>事件 <b>25 类</b></span><span>文档 <b>2988 行</b></span><span>权限 <b>与 pi 进程相同</b></span></div>
+</header>
+
+<section id="s1">
+  <div class="sec-tag"><span class="cell"></span><span class="lab">§1 Mental Model 一句话心智模型</span></div>
+
+  <h2>先记住这一句</h2>
+<div class="oneliner"><b>pi 的扩展不是插件，是<em>同进程运行的 TypeScript 模块，拥有和 pi 一样的全部权限</em>。它能覆盖内建工具、改上下文、加命令、接管渲染——代价是它也能做任何别的事。</b></div>
+<p>这个设计与 <a href="ch15.html">第 15 章</a>「不做权限系统」是同一个决定的两面。扩展系统的能力之所以能这么大，正是因为 pi 放弃了在进程内划边界；反过来，正因为扩展能力这么大，进程内的边界也确实没意义了。</p>
+<p>文档在「扩展位置」一节开头就把这件事挑明了。</p>
+
+</section>
+
+<section id="s2">
+  <div class="sec-tag"><span class="cell"></span><span class="lab">§2 Evidence 代码实证</span></div>
+
+  <h2>安全提示写在最前面</h2>
+<div class="tpl">
+  <div class="tpl-head"><span class="path">packages/coding-agent/docs/extensions.md</span><span class="lines literal">原文 L111</span></div>
+  <pre><code>&gt; **Security:** Extensions run with your full system permissions and can execute
+  arbitrary code. Only install from sources you trust.</code></pre>
+  <div class="tpl-foot">项目本地的 <code>.pi/extensions</code> 只在项目被信任后才加载——这正是 <a href="ch15.html">第 15 章</a>里 project trust 唯一真正管的事。<a class="src" href="https://github.com/earendil-works/pi/blob/ac4ac9eaf69f2b01ca3af984a5c48f3b99b84278/packages/coding-agent/docs/extensions.md#L111" data-expect="Extensions run with your full system permissions">extensions.md:111</a></div>
+</div>
+
+  <h2>四类接入点</h2>
+<div class="tbl-scroll"><table><thead><tr><th>类别</th><th>能做什么</th></tr></thead><tbody>
+<tr><td><b>事件</b>（25 类）</td><td>观察生命周期：会话、agent、turn、消息、工具、模型、用户 bash、输入</td></tr>
+<tr><td><b>工具</b></td><td><code>pi.registerTool()</code> 注册新工具，或<b>覆盖同名内建工具</b>（Gondolin 就靠这个）</td></tr>
+<tr><td><b>命令与快捷键</b></td><td><code>registerCommand</code> / <code>registerShortcut</code> / <code>registerFlag</code></td></tr>
+<tr><td><b>渲染</b></td><td><code>registerMessageRenderer</code> / <code>registerEntryRenderer</code> / <code>registerMarkdownTransformer</code></td></tr>
+</tbody></table></div>
+<p>事件类型的权威列表是一个 TypeScript 联合类型，共 25 个成员。<a class="src" href="https://github.com/earendil-works/pi/blob/ac4ac9eaf69f2b01ca3af984a5c48f3b99b84278/packages/coding-agent/src/core/extensions/types.ts#L1034" data-expect="export type ExtensionEvent =">extensions/types.ts:1034</a>（计数由 <code>tools/stats.sh</code> 从该联合类型程序化统计。）</p>
+
+  <h2>有几个事件不只是观察，还能改</h2>
+<p>典型是 <code>context</code> 事件——它就是 <a href="ch05.html">第 05 章</a>那道 <code>transformContext</code> 闸门的全部内容：coding-agent 把它原样转交给扩展。返回 <code>{ messages }</code> 就能改写这次请求的上下文。</p>
+<p>还有 <code>tool_call</code> 事件可以 <code>block</code> 一次工具执行并附 <code>terminate</code>——对应 <a href="ch04.html">第 04 章</a>的 <code>beforeToolCall</code>。</p>
+<p><b>注意这里的边界</b>：扩展能改「喂进去什么」和「要不要执行」，但改不了循环的形状（<a href="ch03.html">第 03 章</a> §3）。这不是疏漏，是 <code>CONTRIBUTING.md</code> 写明的克制。</p>
+
+  <h2>会话操作也开放了</h2>
+<p><code>ctx.newSession()</code> / <code>ctx.fork(entryId)</code> / <code>ctx.navigateTree(targetId)</code> / <code>ctx.switchSession(path)</code> ——<a href="ch07.html">第 07 章</a>那棵会话树的操作对扩展是开放的。文档专门有一节叫「Session replacement lifecycle and footguns」，本身说明这组 API 容易用错。</p>
+
+</section>
+
+<section id="s3">
+  <div class="sec-tag"><span class="cell"></span><span class="lab">§3 Design 设计动机与权衡</span></div>
+
+  <h2>「同进程 + 全权限」换来了什么</h2>
+<p>换来的是扩展能做的事没有上限：覆盖内建工具、把执行路由进 micro-VM、接管渲染、改上下文、注册新的交互模式。<a href="ch15.html">第 15 章</a>里 Gondolin 那套隔离方案<b>本身就是一个扩展</b>——这在一个有沙箱的插件系统里是做不到的。</p>
+<p>代价直白：装一个扩展等于给它 shell 权限。文档没有回避，把它放在最显眼的位置。</p>
+
+  <h2>核心最小化这条规则的可执行性</h2>
+<p><a href="ch02.html">第 02 章</a>提到，「不属于核心的做成扩展」这条规则要可执行，取决于扩展系统够不够强。从 25 类事件 + 工具覆盖 + 渲染接管来看，<b>它确实够强</b>——被拒的 PR 有真实的去处。</p>
+<p>但也有明确做不到的：改循环控制流、加新的 LLM provider（那是 <code>pi-ai</code> 的事，走的是另一条路 <code>docs/custom-provider.md</code>）、以及任何需要修改 <code>packages/agent</code> 语义的事情。</p>
+
+  <h2>事件命名暴露了执行模型</h2>
+<p>25 个事件里同时有 <code>agent_end</code> 和 <code>agent_settled</code>。这个区分直接来自 <a href="ch03.html">第 03 章</a>的机制：<code>agent_end</code> 意味着循环不再发事件，而「settled」还要等所有被 await 的订阅者跑完。<b>把这两个时刻分成两个事件，是因为它们真的不同</b>——想在「一切都结束了」之后做事的扩展，要用后者。</p>
+
+</section>
+
+<section id="s4">
+  <div class="sec-tag"><span class="cell"></span><span class="lab">§4 Limits 边界与失效条件</span></div>
+
+<ul>
+  <li><b>扩展在 pi 进程所在的地方运行。</b>用 Gondolin 把内建工具路由进 VM 时，其它扩展工具仍在宿主（<a href="ch15.html">第 15 章</a> §4）。</li>
+  <li><b><code>context</code> 事件每 turn 触发一次。</b>在这里做网络请求或重计算，成本乘以 turn 数（<a href="ch05.html">第 05 章</a> §4）。</li>
+  <li><b>无类型的 JS 扩展可能返回不合规的工具结果。</b>核心为此做了兜底（<a href="ch04.html">第 04 章</a>：<code>content ?? []</code>），说明这在实践中真的发生过。</li>
+  <li><b>会话替换类 API 有专门的 footguns 章节。</b><code>fork</code> / <code>switchSession</code> / <code>navigateTree</code> 会替换当前会话对象，持有旧引用的代码会静默失效。</li>
+  <li><b>2988 行的扩展文档本身是复杂度信号。</b>它是仓库里第二长的文档，仅次于 harness-v2 设计文档。</li>
+</ul>
+
+</section>
+
+<section id="s5">
+  <div class="sec-tag"><span class="cell"></span><span class="lab">§5 Takeaway 拿走什么</span></div>
+
+<ul class="takeaway">
+  <li><b>如果你不打算做沙箱，就把扩展能力开到最大，并把安全提示放在文档最前面。</b>半开放的插件系统同时失去能力和安全性。
+    <span class="cond">适用条件：本地开发者工具。<b>面向终端用户的产品不能这么做。</b></span></li>
+  <li><b>「不属于核心的做成扩展」要成立，扩展系统必须能覆盖内建行为，而不只是追加行为。</b>pi 允许扩展覆盖同名工具，这是 Gondolin 隔离方案能作为扩展存在的前提。
+    <span class="cond">适用条件：你打算用这条规则拒 PR。</span></li>
+  <li><b>把「循环结束」和「一切 settled」分成两个事件。</b>需要做收尾副作用的订阅者关心的是后者，而这两个时刻的差值恰恰是异步订阅者的执行时间。
+    <span class="cond">适用条件：事件订阅者可以是异步的。</span></li>
+</ul>
+
+</section>
+
+
+<section id="quiz">
+  <div class="sec-tag"><span class="cell"></span><span class="lab">§ Self-check 自测</span></div>
+  <h2>给场景，判断 pi 会怎么做</h2>
+
+<div class="quiz">
+
+<div class="q" data-answer="b">
+  <p class="qprompt"><span class="qtype">场景</span>你装了一个第三方 pi 扩展。它能读你的 <code>~/.ssh</code> 私钥吗？</p>
+  <div class="opts">
+    <button class="opt" type="button" data-ch="a">不能——扩展跑在沙箱里</button>
+    <button class="opt" type="button" data-ch="b">能——扩展与 pi 进程同权限，文档把这句写在最前面</button>
+    <button class="opt" type="button" data-ch="c">要先弹窗请求用户批准</button>
+  </div>
+  <details><summary>看答案</summary><div class="answer">
+    <p><b>B。</b><a class="src" href="https://github.com/earendil-works/pi/blob/ac4ac9eaf69f2b01ca3af984a5c48f3b99b84278/packages/coding-agent/docs/extensions.md#L111" data-expect="Extensions run with your full system permissions">extensions.md:111</a> 这与「不做权限系统」是同一个决定的两面：进程内不存在边界，所以也没有给扩展划边界。</p>
+  </div></details>
+</div>
+
+<div class="q" data-answer="a">
+  <p class="qprompt"><span class="qtype">场景</span>Gondolin 扩展能把内建工具路由进 micro-VM 执行。它靠的是扩展系统的哪个能力？</p>
+  <div class="opts">
+    <button class="opt" type="button" data-ch="a"><code>registerTool</code> 允许<b>覆盖同名内建工具</b></button>
+    <button class="opt" type="button" data-ch="b">一个专门的沙箱 API</button>
+    <button class="opt" type="button" data-ch="c">修改 agent 循环</button>
+  </div>
+  <details><summary>看答案</summary><div class="answer">
+    <p><b>A。</b>覆盖内建工具是这个扩展系统与多数插件系统的关键差异——隔离方案本身能作为扩展存在，前提就是扩展能替换 <code>read</code>/<code>bash</code> 这些名字。</p>
+  </div></details>
+</div>
+
+</div>
+</section>
+
+<div class="next">
+  <a href="ch11.html">← 11 TUI 差分渲染</a>
+  <a href="ch13.html">13 自扩展的含义 →</a>
+</div>
+
+<div class="anchor-foot">
+基于 <a href="https://github.com/earendil-works/pi/tree/ac4ac9eaf69f2b01ca3af984a5c48f3b99b84278">earendil-works/pi @ <code>ac4ac9e</code></a>（2026-08-07 快照）。<br>
+仓库 commit 速度约 428/月，行号引用仅对该 SHA 有效。
+</div>
+
+</div>
+<script src="../assets/quiz.js" defer></script>
+</body>
+</html>

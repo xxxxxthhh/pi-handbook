@@ -1,0 +1,177 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>14 headless · Pi 源码解读手册</title>
+<meta name="description" content="RPC / SDK / server / protocol：把 pi 当库和当服务">
+<link rel="icon" type="image/svg+xml" href="../assets/favicon.svg">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@500;700&family=Noto+Sans+SC:wght@400;500;700&family=IBM+Plex+Mono:wght@400;500&display=swap" rel="stylesheet" media="print" onload="this.media='all'">
+<noscript><link href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@500;700&family=Noto+Sans+SC:wght@400;500;700&family=IBM+Plex+Mono:wght@400;500&display=swap" rel="stylesheet"></noscript>
+<link rel="stylesheet" href="../assets/handbook.css">
+<script src="../assets/theme.js"></script>
+</head>
+<body>
+<button class="theme-toggle" type="button" aria-label="切换深色/浅色模式" title="切换深色/浅色模式">
+  <span class="sun" aria-hidden="true">☀️</span><span class="moon" aria-hidden="true">🌙</span>
+</button>
+<div class="wrap">
+<nav class="crumb"><a href="../index.html">← 目录</a> · <a href="../sources.html">溯源索引</a> · <a href="../drift.html">漂移记录</a></nav>
+
+<header class="ch">
+  <div class="bars" aria-hidden="true"><span class="l1"></span><span class="l2"></span><span class="l3"></span><span class="l4 f"></span></div>
+  <div class="kicker">Part IV · Interface &amp; Extensions</div>
+  <h1>14 headless
+    <span class="zh">四条无 UI 路径，以及文档为什么劝你别用 RPC</span>
+  </h1>
+  <div class="meta"><span class="status shipped">已发布</span><span>无头路径 <b>4 条</b></span><span>协议包 <b>experimental</b></span></div>
+</header>
+
+<section id="s1">
+  <div class="sec-tag"><span class="cell"></span><span class="lab">§1 Mental Model 一句话心智模型</span></div>
+
+  <h2>先记住这一句</h2>
+<div class="oneliner"><b>pi 提供了<em>四条</em>无 UI 的接入路径，而且文档明确告诉你别选错：<b>Node/TS 应用应该直接用 <code>AgentSession</code> 类，而不是起一个子进程走 RPC。</b></b></div>
+
+<div class="tbl-scroll"><table><thead><tr><th>路径</th><th>形态</th><th>适合</th></tr></thead><tbody>
+<tr><td><code>-p "prompt"</code></td><td>一次性执行，纯文本输出</td><td>脚本、CI</td></tr>
+<tr><td><code>--mode json</code></td><td>事件流，JSON Lines 到 stdout</td><td>接进其它工具、自定义 UI</td></tr>
+<tr><td><code>--mode rpc</code></td><td>stdin/stdout 上的 JSON 协议，双向</td><td>非 Node 语言、IDE 插件</td></tr>
+<tr><td><b>SDK</b>（<code>AgentSession</code>）</td><td>直接当库用，同进程</td><td><b>Node/TS 应用（首选）</b></td></tr>
+</tbody></table></div>
+
+<p>另外还有一个 <code>packages/protocol</code> + <code>packages/server</code> 的二进制协议，标着 experimental——那是给「会话服务端」用的，与上面四条不是一回事。</p>
+
+</section>
+
+<section id="s2">
+  <div class="sec-tag"><span class="cell"></span><span class="lab">§2 Evidence 代码实证</span></div>
+
+  <h2>文档主动劝退 RPC</h2>
+<div class="tpl">
+  <div class="tpl-head"><span class="path">packages/coding-agent/docs/rpc.md</span><span class="lines literal">原文 L3 与 L5（并置）</span></div>
+  <pre><code>RPC mode enables headless operation of the coding agent via a JSON protocol over
+stdin/stdout. This is useful for embedding the agent in other applications, IDEs, or custom UIs.
+
+**Note for Node.js/TypeScript users**: If you're building a Node.js application, consider
+using `AgentSession` directly from `@earendil-works/pi-coding-agent` instead of spawning
+a subprocess.</code></pre>
+  <div class="tpl-foot">一份 1578 行的 RPC 文档，在第 5 行告诉你的一大类读者别用它。<b>这是好文档的标志</b>——它优化的是读者的结果，不是自己特性的使用率。<a class="src" href="https://github.com/earendil-works/pi/blob/ac4ac9eaf69f2b01ca3af984a5c48f3b99b84278/packages/coding-agent/docs/rpc.md#L5" data-expect="consider using `AgentSession` directly">rpc.md:5</a></div>
+</div>
+
+  <h2>JSON 模式是事件流，不是结果</h2>
+<p><code>pi --mode json "prompt"</code> 把<b>全部会话事件</b>按 JSON Lines 输出。<a class="src" href="https://github.com/earendil-works/pi/blob/ac4ac9eaf69f2b01ca3af984a5c48f3b99b84278/packages/coding-agent/docs/json.md#L7" data-expect="Outputs all session events as JSON lines to stdout">json.md:7</a> 事件种类与 <a href="ch03.html">第 03 章</a>的循环事件同源——<code>agent_start</code> / <code>turn_start</code> / <code>message_update</code> / <code>tool_execution_*</code>。</p>
+<p>换句话说，<b>无头模式暴露的是循环的内部结构，而不是一个封装好的「答案」</b>。要拿最终文本，你得自己从事件流里挑。</p>
+
+  <h2>实验性的二进制协议</h2>
+<div class="tpl">
+  <div class="tpl-head"><span class="path">packages/protocol/README.md</span><span class="lines literal">原文 L5–L10（节选）</span></div>
+  <pre><code>Protocol version `1` uses binary messages with this wire layout:
+1. A four-byte unsigned big-endian payload length.
+2. One definite-length CBOR item containing the message.
+
+… Session and server snapshots are authoritative. Progress events are transient UI
+hints and must not be reduced into authoritative state.</code></pre>
+  <div class="tpl-foot">最后那句是整段里最重要的设计约束：<b>快照是权威，进度事件只是 UI 提示，不许归约进权威状态</b>。<a class="src" href="https://github.com/earendil-works/pi/blob/ac4ac9eaf69f2b01ca3af984a5c48f3b99b84278/packages/protocol/README.md#L10" data-expect="Progress events are transient UI hints and must not be reduced into authoritative state.">protocol/README.md:10</a></div>
+</div>
+
+<p>这条规则与 <a href="ch08.html">第 08 章</a>harness-v2 的 UI 模型是同一条：<b>客户端拿一次原子快照，然后接实时事件流；事件不重放，重连就是拿新快照。</b>两处独立表述了同一个约束，说明它是这套架构里想清楚了的部分。</p>
+
+</section>
+
+<section id="s3">
+  <div class="sec-tag"><span class="cell"></span><span class="lab">§3 Design 设计动机与权衡</span></div>
+
+  <h2>为什么四条路径都要有</h2>
+<p>看似冗余，实际对应四种不同的调用方约束：</p>
+<ul>
+  <li><code>-p</code>：调用方是 shell，只要 stdout；</li>
+  <li><code>--mode json</code>：调用方要看过程，但不需要回话（单向）；</li>
+  <li><code>--mode rpc</code>：调用方要双向交互（steering、审批），且<b>不是 Node</b>；</li>
+  <li>SDK：调用方是 Node，可以同进程——省掉一次进程边界和一次序列化。</li>
+</ul>
+<p>关键在最后一条：<b>如果 SDK 可用，RPC 就是纯粹的开销。</b>文档把这件事说破，而不是让每个 Node 用户自己踩一遍。</p>
+
+  <h2>「快照权威 + 事件瞬态」是这类系统的核心约束</h2>
+<p>一个流式 agent 的客户端有两个信息来源：初始快照和实时事件。允许客户端把事件归约进状态，就等于要求事件流<b>无丢失、无重复、严格有序</b>——那是分布式系统里最贵的保证之一。</p>
+<p>pi 的做法是拒绝支付这个成本：<b>事件只用来更新界面，权威状态永远来自快照；断线了就重新拿快照。</b>代价是重连成本高（要传整个快照），收益是事件通道可以不可靠。</p>
+<p>对一个「事件是 token 级、每秒几十条」的系统，这个取舍显然正确。</p>
+
+</section>
+
+<section id="s4">
+  <div class="sec-tag"><span class="cell"></span><span class="lab">§4 Limits 边界与失效条件</span></div>
+
+<ul>
+  <li><b><code>packages/server</code> 与 <code>packages/protocol</code> 标着 experimental</b>，README 第一行就说可能变更或移除。基于它们做集成是在赌路线图。</li>
+  <li><b>SDK 路径没有稳定 API 承诺。</b><code>AgentSession</code> 来自 <code>coding-agent</code> 包——那是产品层（<a href="ch02.html">第 02 章</a>），不像 <code>pi-ai</code> / <code>pi-agent-core</code> 那样以库的姿态维护。</li>
+  <li><b>无头模式不显示信任提示。</b><code>-p</code>、<code>--mode json</code>、<code>--mode rpc</code> 都不弹 project trust 询问，默认忽略需信任的项目资源（<a href="ch15.html">第 15 章</a>）。集成时要显式决定用 <code>--approve</code> 还是保持默认。</li>
+  <li><b>从事件流里提取「最终答案」是调用方的责任。</b>没有一个 <code>result</code> 事件把答案单独给你。</li>
+</ul>
+
+</section>
+
+<section id="s5">
+  <div class="sec-tag"><span class="cell"></span><span class="lab">§5 Takeaway 拿走什么</span></div>
+
+<ul class="takeaway">
+  <li><b>在文档里主动告诉读者「你这类用户不该用这个特性」。</b>RPC 文档第 5 行劝退 Node 用户，省下的是所有人的时间。
+    <span class="cond">适用条件：你的同一能力有多条接入路径。<b>这是本章最该抄的一条。</b></span></li>
+  <li><b>快照是权威，事件是瞬态提示——并把这条写进协议规范。</b>它让事件通道可以不可靠，代价只是重连时重传快照。
+    <span class="cond">适用条件：高频事件 + 可能断线的客户端。<b>低频事件系统可以让客户端归约，省掉快照。</b></span></li>
+  <li><b>无头模式暴露循环的事件结构，而不是封装好的结果。</b>这让调用方能做进度 UI，但也要求它自己定义「什么算完成」。
+    <span class="cond">代价：<b>简单场景下调用方要写更多代码</b>——所以还要保留一个 <code>-p</code> 这样的纯文本路径。</span></li>
+</ul>
+
+</section>
+
+
+<section id="quiz">
+  <div class="sec-tag"><span class="cell"></span><span class="lab">§ Self-check 自测</span></div>
+  <h2>给场景，判断 pi 会怎么做</h2>
+
+<div class="quiz">
+
+<div class="q" data-answer="b">
+  <p class="qprompt"><span class="qtype">场景</span>你在写一个 Node.js 应用要嵌入 pi。按文档，首选哪条路径？</p>
+  <div class="opts">
+    <button class="opt" type="button" data-ch="a">起子进程走 <code>--mode rpc</code></button>
+    <button class="opt" type="button" data-ch="b">直接用 <code>AgentSession</code> 当库——RPC 文档第 5 行就劝退了 Node 用户</button>
+    <button class="opt" type="button" data-ch="c"><code>--mode json</code> 解析事件流</button>
+  </div>
+  <details><summary>看答案</summary><div class="answer">
+    <p><b>B。</b><a class="src" href="https://github.com/earendil-works/pi/blob/ac4ac9eaf69f2b01ca3af984a5c48f3b99b84278/packages/coding-agent/docs/rpc.md#L5" data-expect="consider using `AgentSession` directly">rpc.md:5</a> SDK 可用时，RPC 的进程边界和序列化是纯开销。</p>
+  </div></details>
+</div>
+
+<div class="q" data-answer="b">
+  <p class="qprompt"><span class="qtype">场景</span><code>pi --mode json</code> 跑完了一个任务。「最终答案」在输出的哪里？</p>
+  <div class="opts">
+    <button class="opt" type="button" data-ch="a">有一个专门的 <code>result</code> 事件</button>
+    <button class="opt" type="button" data-ch="b">没有单独的答案事件——要自己从事件流里挑出最后的 assistant 消息</button>
+    <button class="opt" type="button" data-ch="c">stdout 的最后一行固定是答案</button>
+  </div>
+  <details><summary>看答案</summary><div class="answer">
+    <p><b>B。</b>无头模式暴露的是循环的事件结构（<code>agent_start</code> / <code>message_update</code> / <code>tool_execution_*</code>），「什么算完成」由调用方定义。简单场景请用 <code>-p</code>。</p>
+  </div></details>
+</div>
+
+</div>
+</section>
+
+<div class="next">
+  <a href="ch13.html">← 13 自扩展的含义</a>
+  <a href="ch15.html">15 不做权限系统 →</a>
+</div>
+
+<div class="anchor-foot">
+基于 <a href="https://github.com/earendil-works/pi/tree/ac4ac9eaf69f2b01ca3af984a5c48f3b99b84278">earendil-works/pi @ <code>ac4ac9e</code></a>（2026-08-07 快照）。<br>
+仓库 commit 速度约 428/月，行号引用仅对该 SHA 有效。
+</div>
+
+</div>
+<script src="../assets/quiz.js" defer></script>
+</body>
+</html>

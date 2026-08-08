@@ -1,0 +1,149 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>10 认证与账号 · Pi 源码解读手册</title>
+<meta name="description" content="API key / OAuth / 订阅账号三条路，以及 token 过期为什么要 getApiKey 回调">
+<link rel="icon" type="image/svg+xml" href="../assets/favicon.svg">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@500;700&family=Noto+Sans+SC:wght@400;500;700&family=IBM+Plex+Mono:wght@400;500&display=swap" rel="stylesheet" media="print" onload="this.media='all'">
+<noscript><link href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@500;700&family=Noto+Sans+SC:wght@400;500;700&family=IBM+Plex+Mono:wght@400;500&display=swap" rel="stylesheet"></noscript>
+<link rel="stylesheet" href="../assets/handbook.css">
+<script src="../assets/theme.js"></script>
+</head>
+<body>
+<button class="theme-toggle" type="button" aria-label="切换深色/浅色模式" title="切换深色/浅色模式">
+  <span class="sun" aria-hidden="true">☀️</span><span class="moon" aria-hidden="true">🌙</span>
+</button>
+<div class="wrap">
+<nav class="crumb"><a href="../index.html">← 目录</a> · <a href="../sources.html">溯源索引</a> · <a href="../drift.html">漂移记录</a></nav>
+
+<header class="ch">
+  <div class="bars" aria-hidden="true"><span class="l1"></span><span class="l2"></span><span class="l3"></span><span class="l4 f"></span></div>
+  <div class="kicker">Part III · Providers</div>
+  <h1>10 认证与账号
+    <span class="zh">API key / OAuth / IAM 三条路，以及它们共同的过期问题</span>
+  </h1>
+  <div class="meta"><span class="status shipped">已发布</span><span>凭证类型 <b>3 类</b></span><span>解析时机 <b>每次调用</b></span></div>
+</header>
+
+<section id="s1">
+  <div class="sec-tag"><span class="cell"></span><span class="lab">§1 Mental Model 一句话心智模型</span></div>
+
+  <h2>先记住这一句</h2>
+<div class="oneliner"><b>pi 支持三类凭证：API key、OAuth 订阅账号、云厂商 IAM。它们的共同点是<em>都可能在一个 run 中途失效</em>，所以认证不是启动时解析一次，而是<b>每次 LLM 调用重新解析</b>。</b></div>
+
+<p>这一章短，但有一个容易被忽略的结构性后果：因为认证要动态解析，<a href="ch03.html">第 03 章</a>那个循环必须持有一个 <code>getApiKey</code> 回调而不是一个字符串。<b>一个看似琐碎的运维事实，反向约束了核心 API 的形状。</b></p>
+
+</section>
+
+<section id="s2">
+  <div class="sec-tag"><span class="cell"></span><span class="lab">§2 Evidence 代码实证</span></div>
+
+  <h2>解析顺序：显式值永远赢</h2>
+<p>集合在 <code>models.stream()</code> 时经所属 provider 解析认证并合并进请求，而<b>每次请求里显式传的值优先于一切</b>——环境变量、存储的凭证、OAuth token 都在其后。<a class="src" href="https://github.com/earendil-works/pi/blob/ac4ac9eaf69f2b01ca3af984a5c48f3b99b84278/packages/ai/README.md#L330" data-expect="Explicit per-request values always win">ai/README.md:330</a></p>
+
+  <h2>循环里的那个回调</h2>
+<div class="tpl">
+  <div class="tpl-head"><span class="path">packages/agent/src/agent-loop.ts</span><span class="lines literal">原文 L305–L306</span></div>
+  <pre><code>const resolvedApiKey =
+    (config.getApiKey ? await config.getApiKey(config.model.provider) : undefined) || config.apiKey;</code></pre>
+  <div class="tpl-foot">注意这行在 <code>streamAssistantResponse</code> 内部，<b>每个 turn 都会执行一次</b>。README 对该字段的注释写得很直白：给会过期的 OAuth token 用。<a class="src" href="https://github.com/earendil-works/pi/blob/ac4ac9eaf69f2b01ca3af984a5c48f3b99b84278/packages/agent/src/agent-loop.ts#L305" data-expect="const resolvedApiKey =">agent-loop.ts:305</a></div>
+</div>
+
+<p>如果认证在构造 <code>Agent</code> 时固定成一个字符串，一个跑 40 分钟的 run 会在 token 过期的那一刻整体失败——而且失败在最不该失败的地方（工具都跑完了，只差最后一次总结）。</p>
+
+  <h2>可以不发请求就查解析结果</h2>
+<p><code>models.getAuth(provider)</code> 返回 provider 级认证；传 model 则会带上该模型的静态 <code>headers</code>。<a class="src" href="https://github.com/earendil-works/pi/blob/ac4ac9eaf69f2b01ca3af984a5c48f3b99b84278/packages/ai/README.md#L343" data-expect="const providerAuth = await models.getAuth(model.provider);">ai/README.md:343</a></p>
+<p>这个 API 的存在本身说明了一件事：<b>当有三类凭证来源时，「现在到底用的哪个」是高频问题，值得一个专门的查询入口。</b></p>
+
+</section>
+
+<section id="s3">
+  <div class="sec-tag"><span class="cell"></span><span class="lab">§3 Design 设计动机与权衡</span></div>
+
+  <h2>为什么支持订阅账号是个大决定</h2>
+<p>支持 Claude Pro / ChatGPT 这类订阅账号（而不只是 API key），意味着要实现 OAuth 流程、token 刷新、以及各家不同的账号态处理。这是 <code>packages/ai</code> 里 <code>auth/oauth</code> 单独成目录的原因。</p>
+<p>收益是准入门槛：用户不需要先去开一个 API 账单账户。对一个想要广泛使用的开源 CLI，这可能是采用率上最重要的一个功能——但它的成本全部落在 pi-ai 这一层，且每家 provider 的实现都不一样。</p>
+
+  <h2>「显式值永远赢」这条规则的价值</h2>
+<p>多来源凭证系统最容易出的问题是<b>优先级不确定</b>：环境变量和存储凭证同时存在时用哪个？pi 的答案是把优先级写成一条可背诵的规则，并且让最显式的那个赢。</p>
+<p>这条规则让调试可行：怀疑认证有问题时，直接在调用里传一个 key，如果好了就说明是解析问题而不是凭证问题。</p>
+
+</section>
+
+<section id="s4">
+  <div class="sec-tag"><span class="cell"></span><span class="lab">§4 Limits 边界与失效条件</span></div>
+
+<ul>
+  <li><b>token 刷新失败没有在循环层面的重试语义。</b><code>getApiKey</code> 抛错或返回过期 token，表现为一次普通的 provider 错误，走 <a href="ch03.html">第 03 章</a> §5 那条直接 return 的路径。</li>
+  <li><b>订阅账号的可用性受 provider 政策约束</b>，且这类政策变化不体现在代码里。本章不评估任何 provider 的服务条款。</li>
+  <li><b>凭证存储在 <code>~/.pi/agent</code> 下。</b><a href="ch15.html">第 15 章</a>提到的容器化建议里有一条直接相关：<b>不要把宿主的 <code>~/.pi/agent</code> 挂进容器</b>，否则等于把全部凭证交给容器里的代码。</li>
+</ul>
+
+</section>
+
+<section id="s5">
+  <div class="sec-tag"><span class="cell"></span><span class="lab">§5 Takeaway 拿走什么</span></div>
+
+<ul class="takeaway">
+  <li><b>凭证解析做成「每次调用一个回调」，不是「构造时一个字符串」。</b>只要你支持任何有有效期的凭证，长任务就一定会撞上过期。
+    <span class="cond">适用条件：OAuth / STS / 任何短期凭证。<b>纯静态 API key 场景不需要，但加上也几乎无成本。</b></span></li>
+  <li><b>把凭证优先级写成一条能背下来的规则，并让最显式的赢。</b>「显式参数 &gt; 存储凭证 &gt; 环境变量」比任何文档表格都好用。
+    <span class="cond">适用条件：凭证有两个以上来源。</span></li>
+  <li><b>提供一个「不发请求就能查认证怎么解析的」入口。</b>它把「凭证错了」和「解析错了」区分开——这是支持工单里最常见的二义性。
+    <span class="cond">适用条件：同上。</span></li>
+</ul>
+
+</section>
+
+
+<section id="quiz">
+  <div class="sec-tag"><span class="cell"></span><span class="lab">§ Self-check 自测</span></div>
+  <h2>给场景，判断 pi 会怎么做</h2>
+
+<div class="quiz">
+
+<div class="q" data-answer="b">
+  <p class="qprompt"><span class="qtype">场景</span>一个跑了 40 分钟的 run，中途 OAuth token 过期了。pi 的行为是什么？</p>
+  <div class="opts">
+    <button class="opt" type="button" data-ch="a">run 整体失败，需要重跑</button>
+    <button class="opt" type="button" data-ch="b">下一次 LLM 调用时 <code>getApiKey</code> 回调重新解析，拿到刷新后的 token</button>
+    <button class="opt" type="button" data-ch="c">暂停等用户重新登录</button>
+  </div>
+  <details><summary>看答案</summary><div class="answer">
+    <p><b>B。</b>认证在每个 turn 的 LLM 调用前重新解析，不在构造时固定。<a class="src" href="https://github.com/earendil-works/pi/blob/ac4ac9eaf69f2b01ca3af984a5c48f3b99b84278/packages/agent/src/agent-loop.ts#L305" data-expect="const resolvedApiKey =">agent-loop.ts:305</a></p>
+  </div></details>
+</div>
+
+<div class="q" data-answer="b">
+  <p class="qprompt"><span class="qtype">场景</span>环境变量里有 <code>ANTHROPIC_API_KEY</code>，你调用时又显式传了另一个 key。哪个生效？</p>
+  <div class="opts">
+    <button class="opt" type="button" data-ch="a">环境变量——它更早被加载</button>
+    <button class="opt" type="button" data-ch="b">显式传的——per-request 显式值永远赢</button>
+    <button class="opt" type="button" data-ch="c">报错，拒绝二义性</button>
+  </div>
+  <details><summary>看答案</summary><div class="answer">
+    <p><b>B。</b>解析顺序的第一条规则：显式值优先于 provider 解析出来的一切。<a class="src" href="https://github.com/earendil-works/pi/blob/ac4ac9eaf69f2b01ca3af984a5c48f3b99b84278/packages/ai/README.md#L330" data-expect="Explicit per-request values always win">ai/README.md:330</a></p>
+  </div></details>
+</div>
+
+</div>
+</section>
+
+<div class="next">
+  <a href="ch09.html">← 09 pi-ai 的抽象</a>
+  <a href="ch11.html">11 TUI 差分渲染 →</a>
+</div>
+
+<div class="anchor-foot">
+基于 <a href="https://github.com/earendil-works/pi/tree/ac4ac9eaf69f2b01ca3af984a5c48f3b99b84278">earendil-works/pi @ <code>ac4ac9e</code></a>（2026-08-07 快照）。<br>
+仓库 commit 速度约 428/月，行号引用仅对该 SHA 有效。
+</div>
+
+</div>
+<script src="../assets/quiz.js" defer></script>
+</body>
+</html>

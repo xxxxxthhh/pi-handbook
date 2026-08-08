@@ -1,0 +1,45 @@
+{
+  "_generated_by": "tools/stats.sh",
+  "repo": "earendil-works/pi",
+  "sha": "ac4ac9eaf69f2b01ca3af984a5c48f3b99b84278",
+  "sha_short": "ac4ac9e",
+  "snapshot_date": "2026-08-07",
+  "history": {
+    "first_commit_date": "2025-08-09",
+    "commits": 5565,
+    "authors": 286,
+    "active_months": 13,
+    "commits_per_month": 428
+  },
+  "code": {
+    "packages": 10,
+    "total_ts_loc": 250858,
+    "providers": 39,
+    "builtin_tools": 7,
+    "extension_events": 25,
+    "harness_hook_names": 11
+  },
+  "docs": {
+    "markdown_files": 97,
+    "markdown_lines": 32945,
+    "harness_v2_lines": 3437
+  },
+  "harness_v2": {
+    "unimplemented_methods": 22
+  },
+  "packages_detail": [
+    {"name": "agent", "loc": 21053},
+    {"name": "ai", "loc": 58449},
+    {"name": "client", "loc": 2472},
+    {"name": "coding-agent", "loc": 123797},
+    {"name": "evals", "loc": 1774},
+    {"name": "protocol", "loc": 1961},
+    {"name": "server", "loc": 3761},
+    {"name": "session-backends", "loc": 4039},
+    {"name": "telemetry", "loc": 1178},
+    {"name": "tui", "loc": 32374}
+  ],
+  "book": {
+    "chapters": 21
+  }
+}

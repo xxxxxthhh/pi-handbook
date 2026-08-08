@@ -1,0 +1,231 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>04 工具执行 · Pi 源码解读手册</title>
+<meta name="description" content="并行/串行的真实语义、preflight、terminate、截断消息的全批次作废">
+<link rel="icon" type="image/svg+xml" href="../assets/favicon.svg">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@500;700&family=Noto+Sans+SC:wght@400;500;700&family=IBM+Plex+Mono:wght@400;500&display=swap" rel="stylesheet" media="print" onload="this.media='all'">
+<noscript><link href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@500;700&family=Noto+Sans+SC:wght@400;500;700&family=IBM+Plex+Mono:wght@400;500&display=swap" rel="stylesheet"></noscript>
+<link rel="stylesheet" href="../assets/handbook.css">
+<script src="../assets/theme.js"></script>
+</head>
+<body>
+<button class="theme-toggle" type="button" aria-label="切换深色/浅色模式" title="切换深色/浅色模式">
+  <span class="sun" aria-hidden="true">☀️</span><span class="moon" aria-hidden="true">🌙</span>
+</button>
+<div class="wrap">
+<nav class="crumb"><a href="../index.html">← 目录</a> · <a href="../sources.html">溯源索引</a> · <a href="../drift.html">漂移记录</a></nav>
+
+<header class="ch">
+  <div class="bars" aria-hidden="true"><span class="l1"></span><span class="l2"></span><span class="l3"></span><span class="l4 f"></span></div>
+  <div class="kicker">Part II · Kernel — Tool Execution</div>
+  <h1>04 工具执行
+    <span class="zh">「并行」不是你以为的那个并行</span>
+  </h1>
+  <div class="meta">
+    <span class="status shipped">已发布</span>
+    <span>主文件 <b>agent-loop.ts</b> L411–L791</span>
+    <span>内建工具 <b>7 个</b></span>
+  </div>
+</header>
+
+<section id="s1">
+  <div class="sec-tag"><span class="cell"></span><span class="lab">§1 Mental Model 一句话心智模型</span></div>
+  <h2>先记住这一句</h2>
+
+<div class="oneliner"><b>pi 的「并行工具执行」只并行 <code>execute()</code> 本身。参数校验、<code>beforeToolCall</code> 拦截、事件发出的第一帧，全部按 assistant 给出的顺序串行走完，一个都不跳。</b></div>
+
+<p>这句话是理解本章所有行为的钥匙。一次 tool batch 被拆成三个阶段，只有中间那段是并发的：</p>
+
+<ul>
+  <li><b>preflight（串行）</b>——找工具、规整参数、schema 校验、跑 <code>beforeToolCall</code>。这一段决定「哪些调用有资格执行」。</li>
+  <li><b>execute（可并发）</b>——真正跑工具体。只有这里是 <code>Promise.all</code>。</li>
+  <li><b>finalize + 落序（串行）</b>——跑 <code>afterToolCall</code>、生成 <code>toolResult</code> 消息。消息顺序<b>强制回到 assistant 的源顺序</b>，与谁先跑完无关。</li>
+</ul>
+
+<p>由此得到一条实用推论：<b>事件顺序和消息顺序是两套顺序</b>。<code>tool_execution_end</code> 按完成先后到达（UI 据此实时更新），而进入会话历史的 <code>toolResult</code> 永远按模型写下的顺序排列（模型据此理解因果）。把这两者当成一回事，是接 UI 时最常见的错。</p>
+
+</section>
+
+<section id="s2">
+  <div class="sec-tag"><span class="cell"></span><span class="lab">§2 Evidence 代码实证</span></div>
+  <h2>模式选择：一票就能把整批拖回串行</h2>
+
+<p>并行是默认，但有两个降级条件，任一命中则<b>整批</b>串行执行——不是只把那一个工具串行。<a class="src" href="https://github.com/earendil-works/pi/blob/ac4ac9eaf69f2b01ca3af984a5c48f3b99b84278/packages/agent/src/agent-loop.ts#L419" data-expect="const hasSequentialToolCall = toolCalls.some(">agent-loop.ts:419–425</a></p>
+
+<div class="tpl">
+  <div class="tpl-head"><span class="path">packages/agent/src/agent-loop.ts</span><span class="lines literal">原文 L419–L425</span></div>
+  <pre><code>const hasSequentialToolCall = toolCalls.some(
+    (tc) =&gt; currentContext.tools?.find((t) =&gt; t.name === tc.name)?.executionMode === "sequential",
+);
+if (config.toolExecution === "sequential" || hasSequentialToolCall) {
+    return executeToolCallsSequential(currentContext, assistantMessage, toolCalls, config, signal, emit);
+}
+return executeToolCallsParallel(currentContext, assistantMessage, toolCalls, config, signal, emit);</code></pre>
+  <div class="tpl-foot">一个标了 <code>executionMode: "sequential"</code> 的工具，会让同批次的其它工具也失去并发。<b>把 <code>edit</code> 标成串行，同批的 <code>read</code> 也跟着串行。</b></div>
+</div>
+
+<h2>并行分支里，真正并发的只有一小段</h2>
+
+<p><code>executeToolCallsParallel</code> 的循环体本身是 <code>await</code> 串行的：它逐个 emit <code>tool_execution_start</code>、逐个跑 <code>prepareToolCall</code>，只把「执行 + finalize」包成闭包<b>推入数组而不立即 await</b>。<a class="src" href="https://github.com/earendil-works/pi/blob/ac4ac9eaf69f2b01ca3af984a5c48f3b99b84278/packages/agent/src/agent-loop.ts#L489" data-expect="async function executeToolCallsParallel(">agent-loop.ts:489</a> <a class="src" href="https://github.com/earendil-works/pi/blob/ac4ac9eaf69f2b01ca3af984a5c48f3b99b84278/packages/agent/src/agent-loop.ts#L522" data-expect="finalizedCalls.push(async () =&gt; {">agent-loop.ts:522</a></p>
+
+<p>并发发生在循环之后的那一行，随后立即按数组原序生成消息：<a class="src" href="https://github.com/earendil-works/pi/blob/ac4ac9eaf69f2b01ca3af984a5c48f3b99b84278/packages/agent/src/agent-loop.ts#L540" data-expect="const orderedFinalizedCalls = await Promise.all(">agent-loop.ts:540–548</a></p>
+
+<div class="tpl">
+  <div class="tpl-head"><span class="path">packages/agent/src/agent-loop.ts</span><span class="lines rewritten">改写自 L540–L549</span></div>
+  <pre><code>const orderedFinalizedCalls = await Promise.all(          <span class="cm bone"># 唯一的并发点</span>
+    finalizedCalls.map((e) =&gt; typeof e === "function" ? e() : Promise.resolve(e)),
+);
+const messages: ToolResultMessage[] = [];
+for (const finalized of orderedFinalizedCalls) {          <span class="cm bone"># 回到 assistant 源顺序</span>
+    const toolResultMessage = createToolResultMessage(finalized);
+    await emitToolResultMessage(toolResultMessage, emit);
+    messages.push(toolResultMessage);
+}</code></pre>
+  <div class="tpl-foot"><b>这是改写</b>：省略了变量的完整类型标注与箭头函数体的换行。<code>Promise.all</code> 保序，所以 <code>orderedFinalizedCalls</code> 的下标仍是源顺序——「按完成顺序发事件、按源顺序存消息」就是靠这一点实现的。</div>
+</div>
+
+<h2>preflight 的四道关</h2>
+
+<p><code>prepareToolCall</code> 顺序执行四步，任一步失败都返回 <code>kind: "immediate"</code>——不进执行阶段，但<b>仍然会产出一条 <code>toolResult</code></b>，模型总能看到发生了什么。<a class="src" href="https://github.com/earendil-works/pi/blob/ac4ac9eaf69f2b01ca3af984a5c48f3b99b84278/packages/agent/src/agent-loop.ts#L600" data-expect="async function prepareToolCall(">agent-loop.ts:600</a></p>
+
+<div class="tbl-scroll"><table><thead><tr><th>步骤</th><th>失败时</th><th>位置</th></tr></thead><tbody>
+<tr><td>① 按名字找工具</td><td><code>Tool {name} not found</code></td><td><a class="src" href="https://github.com/earendil-works/pi/blob/ac4ac9eaf69f2b01ca3af984a5c48f3b99b84278/packages/agent/src/agent-loop.ts#L607" data-expect="const tool = currentContext.tools?.find((t) =&gt; t.name === toolCall.name);">agent-loop.ts:607</a></td></tr>
+<tr><td>② <code>prepareArguments</code> 规整参数（可选钩子）</td><td>抛错即成为错误结果</td><td><a class="src" href="https://github.com/earendil-works/pi/blob/ac4ac9eaf69f2b01ca3af984a5c48f3b99b84278/packages/agent/src/agent-loop.ts#L586" data-expect="function prepareToolCallArguments(">agent-loop.ts:586</a></td></tr>
+<tr><td>③ schema 校验（typebox）</td><td>校验信息回给模型</td><td><a class="src" href="https://github.com/earendil-works/pi/blob/ac4ac9eaf69f2b01ca3af984a5c48f3b99b84278/packages/agent/src/agent-loop.ts#L618" data-expect="const validatedArgs = validateToolArguments(tool, preparedToolCall);">agent-loop.ts:618</a></td></tr>
+<tr><td>④ <code>beforeToolCall</code> 可 <code>block</code></td><td>用 <code>reason</code> 作为结果，可带 <code>terminate</code></td><td><a class="src" href="https://github.com/earendil-works/pi/blob/ac4ac9eaf69f2b01ca3af984a5c48f3b99b84278/packages/agent/src/agent-loop.ts#L636" data-expect="if (beforeResult?.block) {">agent-loop.ts:636</a></td></tr>
+</tbody></table></div>
+
+<p>注意③在④之前：<b><code>beforeToolCall</code> 拿到的是已经过 schema 校验的参数</b>，不是模型的原始输出。想做「参数级安全策略」的扩展因此不必自己重做解析，但也<b>看不到那些没通过校验的调用</b>——它们在④之前就被挡掉了。</p>
+
+<h2>工具抛错不是异常，是一种正常结果</h2>
+
+<p><code>executePreparedToolCall</code> 把 <code>execute()</code> 的异常整个吞掉，转成 <code>isError: true</code> 的结果。<a class="src" href="https://github.com/earendil-works/pi/blob/ac4ac9eaf69f2b01ca3af984a5c48f3b99b84278/packages/agent/src/agent-loop.ts#L670" data-expect="async function executePreparedToolCall(">agent-loop.ts:670</a> 循环不会因为工具失败而中断——这是 agent 能自我纠错的前提。</p>
+
+<p>同一函数里有一处容易忽略的细节：工具通过 <code>onUpdate</code> 推送的进度事件被收集进 <code>updateEvents</code> 数组，并用 <code>acceptingUpdates</code> 标志在执行结束的瞬间关闸，然后 <code>await Promise.all(updateEvents)</code> 才返回。<a class="src" href="https://github.com/earendil-works/pi/blob/ac4ac9eaf69f2b01ca3af984a5c48f3b99b84278/packages/agent/src/agent-loop.ts#L683" data-expect="(partialResult) =&gt; {">agent-loop.ts:683–699</a> 效果是：<b>迟到的 <code>tool_execution_update</code> 永远不会排在该工具的 <code>tool_execution_end</code> 之后</b>，UI 不会出现「已完成又冒出进度条」。</p>
+
+<h2>afterToolCall 只能改结果的四个字段</h2>
+
+<p>后置钩子的返回值被逐字段合并，未提供的字段保留原值；钩子自己抛错则整条结果被替换为错误。<a class="src" href="https://github.com/earendil-works/pi/blob/ac4ac9eaf69f2b01ca3af984a5c48f3b99b84278/packages/agent/src/agent-loop.ts#L724" data-expect="if (config.afterToolCall) {">agent-loop.ts:724–751</a> 可改的是 <code>content</code> / <code>details</code> / <code>usage</code> / <code>terminate</code>（外加 <code>isError</code>）——<b>改不了 <code>toolName</code>、<code>toolCallId</code>，也无法凭空追加一条结果</b>。</p>
+
+<p>最后 <code>createToolResultMessage</code> 里有一行注释值得记住：JS 扩展写的无类型工具可能返回没有 <code>content</code> 的结果，此处兜底成空数组，避免 <code>null</code> 流进会话历史和 provider 请求体。<a class="src" href="https://github.com/earendil-works/pi/blob/ac4ac9eaf69f2b01ca3af984a5c48f3b99b84278/packages/agent/src/agent-loop.ts#L782" data-expect="Untyped tools (JS extensions) can return results without content">agent-loop.ts:782–784</a> 这是「核心必须容忍扩展写得不严谨」的具体体现，参见 <a href="ch12.html">第 12 章</a>。</p>
+
+</section>
+
+<section id="s3">
+  <div class="sec-tag"><span class="cell"></span><span class="lab">§3 Design 设计动机与权衡</span></div>
+  <h2>为什么 preflight 不并行</h2>
+
+<p>把校验也并行，吞吐会更好一点。不并行换来的是<b>一个确定的拦截顺序</b>：<code>beforeToolCall</code> 按源顺序依次看到每个调用，因此可以实现有状态的策略（「这一批里已经批准过一次写操作了，第二次要问」）。如果 preflight 并发，钩子就得自己处理竞态，而钩子是扩展作者写的。</p>
+
+<p>这个取舍与 <a href="ch03.html">第 03 章</a>看到的一致：pi 倾向于<b>把复杂度留在核心、把简单契约给扩展</b>，代价是核心的控制流不可配置。</p>
+
+<h2>「一个串行工具拖垮整批」是特性还是缺陷</h2>
+
+<p>从实现看这是刻意的：判断写在批次级别而非调用级别。<a class="src" href="https://github.com/earendil-works/pi/blob/ac4ac9eaf69f2b01ca3af984a5c48f3b99b84278/packages/agent/src/agent-loop.ts#L422" data-expect="if (config.toolExecution === &quot;sequential&quot; || hasSequentialToolCall) {">agent-loop.ts:422</a> 理由推得出来但<b>未见公开论述</b>：标 <code>sequential</code> 的工具通常是有副作用且顺序敏感的（改文件、跑命令），如果只把它自己串行、其它照并发，它与并发工具之间的交错顺序仍然不确定——那等于没解决问题。要真正确定，只能整批串行。</p>
+
+<p>代价是可观的：模型常在一条消息里发出「读三个文件 + 编辑一个文件」，只要 <code>edit</code> 是串行的，三次读也失去并发。pi 的内建 <code>edit</code>/<code>write</code> 用的是另一条路——<code>file-mutation-queue.ts</code> 这样的串行化队列，把顺序保证做在工具内部而不是抬到批次级别。</p>
+
+<h2>错误一律回灌给模型，而不是抛给用户</h2>
+
+<p>找不到工具、参数不合法、执行抛错、被 <code>beforeToolCall</code> 拦下——四种情况产出的都是一条正常的 <code>toolResult</code>。这让「模型自己发现错了再改」成为默认路径，而不是需要额外设计的功能。</p>
+
+<p>边界在于：<b>这也意味着没有任何一类工具错误会让 run 停下来</b>。一个每次都失败的工具，模型可以反复调用它直到上下文耗尽。停机责任完全在模型和上层（见 <a href="ch03.html">第 03 章</a> §4）。</p>
+
+</section>
+
+<section id="s4">
+  <div class="sec-tag"><span class="cell"></span><span class="lab">§4 Limits 边界与失效条件</span></div>
+  <h2>什么时候这套机制会咬你</h2>
+
+<ul>
+  <li><b>并发工具之间没有任何互斥。</b>循环层不提供锁。两个并发工具同时写一个文件，结果取决于工具自己有没有做序列化。内建写工具有 <code>file-mutation-queue</code>，<b>扩展工具默认什么都没有</b>。</li>
+  <li><b><code>signal.aborted</code> 的检查点是稀疏的。</b>并行分支在每次 push 闭包后检查一次并 <code>break</code>，<a class="src" href="https://github.com/earendil-works/pi/blob/ac4ac9eaf69f2b01ca3af984a5c48f3b99b84278/packages/agent/src/agent-loop.ts#L522" data-expect="finalizedCalls.push(async () =&gt; {">agent-loop.ts:522–538</a> 但已经 push 进去的闭包仍会在随后的 <code>Promise.all</code> 中运行。abort 之后仍有工具在跑，是预期行为——真正的取消要靠工具自己响应 <code>signal</code>。</li>
+  <li><b>preflight 抛错的粒度是整个调用，不是单个字段。</b>schema 校验失败时模型拿到的是校验器的信息；工具参数设计得越复杂，模型越难从这条信息里恢复。</li>
+  <li><b><code>afterToolCall</code> 抛错会吃掉工具的成功结果。</b><a class="src" href="https://github.com/earendil-works/pi/blob/ac4ac9eaf69f2b01ca3af984a5c48f3b99b84278/packages/agent/src/agent-loop.ts#L747" data-expect="} catch (error) {">agent-loop.ts:747–750</a> 一个写得不严谨的审计钩子，能把所有工具结果变成错误。钩子自身必须防御性编写。</li>
+</ul>
+
+<p><b>检查过但未发现问题</b>：串行分支与并行分支的错误处理路径一致（都经 <code>prepareToolCall</code> → <code>executePreparedToolCall</code> → <code>finalizeExecutedToolCall</code>），没有出现「只在某一种模式下才有的行为」。两个分支的差别只在于何时 await。</p>
+
+</section>
+
+<section id="s5">
+  <div class="sec-tag"><span class="cell"></span><span class="lab">§5 Takeaway 拿走什么</span></div>
+  <h2>如果你在设计工具执行层</h2>
+
+<ul class="takeaway">
+  <li><b>把「事件顺序」和「历史顺序」显式分开，并在文档里写清哪个是哪个。</b>UI 要实时性，模型要因果性，两者天然冲突；pi 用「并发拿结果、按源序落消息」同时满足。
+    <span class="cond">适用条件：允许并行 tool call 且有实时 UI。<b>无 UI 的批处理场景只需要一种顺序。</b></span></li>
+  <li><b>顺序保证做在工具内部，别抬到批次级别。</b>pi 的批次级 <code>sequential</code> 开关会让同批无关工具一起失去并发；内建写工具走的 mutation queue 才是可扩展的做法。
+    <span class="cond">适用条件：你的工具集里有副作用工具。<b>纯只读工具集不需要任何序列化。</b></span></li>
+  <li><b>所有工具错误都变成模型能读的 <code>toolResult</code>，包括「工具不存在」和「被策略拦下」。</b>这让自我纠错成为默认行为而非附加功能。
+    <span class="cond">代价：<b>没有任何工具错误能终止 run</b>，停机保护必须另外做。</span></li>
+  <li><b>给进度回调设一个「关闸」标志，并在返回前 await 已排队的事件。</b>否则迟到的进度事件会排在完成事件之后，UI 出现无法解释的回跳。
+    <span class="cond">适用条件：工具支持流式进度。<b>一次性返回的工具不涉及。</b></span></li>
+</ul>
+
+</section>
+
+<section id="quiz">
+  <div class="sec-tag"><span class="cell"></span><span class="lab">§ Self-check 自测</span></div>
+  <h2>给场景，判断 pi 会怎么做</h2>
+
+<div class="quiz">
+
+<div class="q" data-answer="b">
+  <p class="qprompt"><span class="qtype">场景</span>模型一条消息里发了 <code>read(a)</code>、<code>read(b)</code>、<code>edit(c)</code>。全局 <code>toolExecution: "parallel"</code>，但 <code>edit</code> 的 <code>executionMode</code> 是 <code>"sequential"</code>。三个工具怎么跑？</p>
+  <div class="opts">
+    <button class="opt" type="button" data-ch="a">两个 read 并发，edit 在它们之后单独跑</button>
+    <button class="opt" type="button" data-ch="b">三个全部串行，一个接一个</button>
+    <button class="opt" type="button" data-ch="c">三个全部并发，edit 内部自己加锁</button>
+  </div>
+  <details><summary>看答案</summary><div class="answer">
+    <p><b>B。</b><code>hasSequentialToolCall</code> 是批次级判断——只要批里有<em>任何一个</em>工具标了 sequential，整批走 <code>executeToolCallsSequential</code>。<a class="src" href="https://github.com/earendil-works/pi/blob/ac4ac9eaf69f2b01ca3af984a5c48f3b99b84278/packages/agent/src/agent-loop.ts#L422" data-expect="if (config.toolExecution === &quot;sequential&quot; || hasSequentialToolCall) {">agent-loop.ts:422</a></p>
+  </div></details>
+</div>
+
+<div class="q" data-answer="c">
+  <p class="qprompt"><span class="qtype">场景</span>并行模式下三个工具，完成顺序是 3 → 1 → 2。写进会话 JSONL 的 <code>toolResult</code> 顺序是什么？</p>
+  <div class="opts">
+    <button class="opt" type="button" data-ch="a">3、1、2（完成顺序）</button>
+    <button class="opt" type="button" data-ch="b">不确定，取决于事件循环</button>
+    <button class="opt" type="button" data-ch="c">1、2、3（assistant 源顺序）</button>
+  </div>
+  <details><summary>看答案</summary><div class="answer">
+    <p><b>C。</b><code>Promise.all</code> 保序，随后按数组下标顺序生成消息。<code>tool_execution_end</code> 事件按完成顺序（3、1、2），但消息按源顺序。<a class="src" href="https://github.com/earendil-works/pi/blob/ac4ac9eaf69f2b01ca3af984a5c48f3b99b84278/packages/agent/src/agent-loop.ts#L540" data-expect="const orderedFinalizedCalls = await Promise.all(">agent-loop.ts:540</a></p>
+  </div></details>
+</div>
+
+<div class="q" data-answer="a">
+  <p class="qprompt"><span class="qtype">场景</span>你写了个 <code>beforeToolCall</code> 想审计模型传的原始参数，包括那些格式非法的。你能看到它们吗？</p>
+  <div class="opts">
+    <button class="opt" type="button" data-ch="a">看不到——schema 校验在钩子之前，非法调用早被挡掉</button>
+    <button class="opt" type="button" data-ch="b">能，钩子拿到的是模型的原始输出</button>
+    <button class="opt" type="button" data-ch="c">能，但要设置 <code>rawArgs: true</code></button>
+  </div>
+  <details><summary>看答案</summary><div class="answer">
+    <p><b>A。</b>顺序是 <code>prepareArguments</code> → <code>validateToolArguments</code> → <code>beforeToolCall</code>。钩子收到的 <code>args</code> 是校验后的值；校验失败的调用在 L618 抛错，直接变成 <code>immediate</code> 错误结果，永远到不了钩子。<a class="src" href="https://github.com/earendil-works/pi/blob/ac4ac9eaf69f2b01ca3af984a5c48f3b99b84278/packages/agent/src/agent-loop.ts#L618" data-expect="const validatedArgs = validateToolArguments(tool, preparedToolCall);">agent-loop.ts:618</a></p>
+  </div></details>
+</div>
+
+</div>
+</section>
+
+<div class="next">
+  <a href="ch03.html">← 03 agent loop 逐行</a>
+  <a href="ch05.html">05 上下文管道 →</a>
+</div>
+
+<div class="anchor-foot">
+基于 <a href="https://github.com/earendil-works/pi/tree/ac4ac9eaf69f2b01ca3af984a5c48f3b99b84278">earendil-works/pi @ <code>ac4ac9e</code></a>（2026-08-07 快照）。<br>
+仓库 commit 速度约 428/月，行号引用仅对该 SHA 有效。
+</div>
+
+</div>
+<script src="../assets/quiz.js" defer></script>
+</body>
+</html>

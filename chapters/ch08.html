@@ -1,0 +1,236 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>08 Harness v2 · Pi 源码解读手册</title>
+<meta name="description" content="一份正在被消费的设计文档：3437 行 spec、22 个抛 HarnessNotImplemented 的方法、41 个工作包">
+<link rel="icon" type="image/svg+xml" href="../assets/favicon.svg">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@500;700&family=Noto+Sans+SC:wght@400;500;700&family=IBM+Plex+Mono:wght@400;500&display=swap" rel="stylesheet" media="print" onload="this.media='all'">
+<noscript><link href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@500;700&family=Noto+Sans+SC:wght@400;500;700&family=IBM+Plex+Mono:wght@400;500&display=swap" rel="stylesheet"></noscript>
+<link rel="stylesheet" href="../assets/handbook.css">
+<script src="../assets/theme.js"></script>
+</head>
+<body>
+<button class="theme-toggle" type="button" aria-label="切换深色/浅色模式" title="切换深色/浅色模式">
+  <span class="sun" aria-hidden="true">☀️</span><span class="moon" aria-hidden="true">🌙</span>
+</button>
+<div class="wrap">
+<nav class="crumb"><a href="../index.html">← 目录</a> · <a href="../sources.html">溯源索引</a> · <a href="../drift.html">漂移记录</a></nav>
+
+<header class="ch">
+  <div class="bars" aria-hidden="true"><span class="l1"></span><span class="l2 w"></span><span class="l3 f"></span><span class="l4 f"></span></div>
+  <div class="kicker">Part II · Kernel — Harness v2</div>
+  <h1>08 Harness v2
+    <span class="zh">一份正在被消费的设计文档</span>
+  </h1>
+  <div class="meta">
+    <span class="status partial">部分落地</span>
+    <span>设计文档 <b>3437 行</b></span>
+    <span>工作包 <b>11 / 41 完成</b></span>
+    <span>抛 <code>HarnessNotImplemented</code> 的方法 <b>22 个</b></span>
+  </div>
+</header>
+
+<section id="s1">
+  <div class="sec-tag"><span class="cell"></span><span class="lab">§1 Mental Model 一句话心智模型</span></div>
+  <h2>先记住这一句</h2>
+
+<div class="oneliner"><b>Harness v2 不是「pi 的架构」，是「pi 正在长成的架构」。存储底座已经完工并通过三后端一致性测试；执行器是一个<em>刻意做成会抛错的</em>空壳。中间隔着 30 个还没做完的工作包。</b></div>
+
+<p>这是全书最容易被误读的一章，也是本书存在的主要理由。上游有一份 3437 行的设计文档，写得极其详尽——lanes、records、checkpoints、race catalog、drive modes。任何人读完都会以为那就是 pi 的样子。<b>但读者在自己机器上跑的 pi，走的是 <a href="ch03.html">第 03 章</a> 那个循环。</b></p>
+
+<p>更要紧的是别把「空壳」读成「没做完」。空壳是<b>一个已经验收的工作包的产物</b>：设计文档明确要求未完成的方法必须抛错，而不能返回看似合理的空快照。这是一种质量决定，不是进度落后。</p>
+
+</section>
+
+<section id="s2">
+  <div class="sec-tag"><span class="cell"></span><span class="lab">§2 Evidence 代码实证</span></div>
+  <h2>判定一：跑着的不是它</h2>
+
+<p>全部 <code>packages/*/src</code> 中，构造 agent 的地方只有一处（另一处在 JSDoc 注释里）：</p>
+
+<div class="tpl">
+  <div class="tpl-head"><span class="path">grep -rn 'new Agent(' packages/*/src/</span><span class="lines rewritten">命令输出，非源码</span></div>
+  <pre><code>packages/agent/src/proxy.ts:92:  * const agent = new Agent({        <span class="cm">← JSDoc 示例</span>
+packages/coding-agent/src/core/sdk.ts:294:  agent = new Agent({           <span class="cm bone">← 唯一真实构造</span></code></pre>
+  <div class="tpl-foot">CLI 的全部模式（交互 / <code>-p</code> / <code>--mode json</code> / <code>--mode rpc</code>）都经这一个 SDK 入口。<a class="src" href="https://github.com/earendil-works/pi/blob/ac4ac9eaf69f2b01ca3af984a5c48f3b99b84278/packages/coding-agent/src/core/sdk.ts#L294" data-expect="agent = new Agent({">sdk.ts:294</a></div>
+</div>
+
+<p><code>AgentHarness</code> 有一个消费者 <code>packages/coding-agent/src/server/create-harness.ts</code>，它确实调用 <code>AgentHarness.create()</code>。<a class="src" href="https://github.com/earendil-works/pi/blob/ac4ac9eaf69f2b01ca3af984a5c48f3b99b84278/packages/coding-agent/src/server/create-harness.ts#L151" data-expect="const created = await AgentHarness.create({">create-harness.ts:151</a> 但这个文件<b>只被它自己的测试引用</b>，没有任何生产代码路径导入它：</p>
+
+<div class="tpl">
+  <div class="tpl-head"><span class="path">grep -rn "create-harness" packages/ --include='*.ts'</span><span class="lines rewritten">命令输出，非源码</span></div>
+  <pre><code>packages/coding-agent/test/server/create-harness.test.ts:20:  } from "../../src/server/create-harness.ts";
+<span class="cm">（仅此一条）</span></code></pre>
+  <div class="tpl-foot">而那个测试只断言 getter：<code>getTools</code> / <code>getActiveTools</code> / <code>getStreamOptions</code> / <code>getRetryPolicy</code> / <code>getSteeringMode</code> / <code>getFollowUpMode</code>。<b>从不调用 <code>prompt()</code>。</b><a class="src" href="https://github.com/earendil-works/pi/blob/ac4ac9eaf69f2b01ca3af984a5c48f3b99b84278/packages/coding-agent/test/server/create-harness.test.ts#L78" data-expect="expect(await created.harness.getActiveTools()).toEqual([&quot;read&quot;, &quot;bash&quot;, &quot;edit&quot;, &quot;write&quot;]);">create-harness.test.ts:78</a></div>
+</div>
+
+<h2>判定二：空壳是刻意的，而且已验收</h2>
+
+<p>22 个方法经同一个 <code>unavailable()</code> 抛出 <code>HarnessNotImplemented</code>：<code>prompt</code>、<code>skill</code>、<code>promptFromTemplate</code>、<code>compact</code>、<code>navigateTree</code>、<code>resume</code>、<code>abort</code>、<code>steer</code>、<code>followUp</code>、<code>nextRun</code>、<code>cancelQueued</code>、<code>recordUsage</code>、<code>waitForIdle</code>、<code>runWhenIdle</code>、<code>peekAction</code>、<code>executeAction</code>、<code>runToCompletion</code>、<code>watch</code>、<code>lane</code>、<code>createLane</code>、<code>lanes</code>、<code>watchSession</code>。<a class="src" href="https://github.com/earendil-works/pi/blob/ac4ac9eaf69f2b01ca3af984a5c48f3b99b84278/packages/agent/src/harness/agent-harness.ts#L356" data-expect="return Promise.reject(this.closed ? new HarnessClosed() : new HarnessNotImplemented(operation));">agent-harness.ts:356</a></p>
+
+<p>连 <code>create()</code> 也只接受空会话——一旦文件里有 record 就拒绝：<a class="src" href="https://github.com/earendil-works/pi/blob/ac4ac9eaf69f2b01ca3af984a5c48f3b99b84278/packages/agent/src/harness/agent-harness.ts#L351" data-expect="if (record !== undefined) throw new HarnessNotImplemented(&quot;create.restore&quot;);">agent-harness.ts:351</a></p>
+
+<p>这些行为不是「还没写」，是<b>工作包 F0 的交付物</b>，且该包已勾选完成：</p>
+
+<div class="tpl">
+  <div class="tpl-head"><span class="path">packages/agent/docs/harness-v2.md</span><span class="lines literal">原文 L3185–L3189</span></div>
+  <pre><code>- [x] **F0 — harden the scaffold.** Dependencies: none.
+  - Primary files: `packages/agent/src/harness/agent-harness.ts`, `…agent-harness-scaffold.test.ts`.
+  - Inventory every public method. Preserve only behavior that is genuinely correct
+    without an operation runtime… Make every other placeholder reject with
+    `HarnessNotImplemented` instead of returning empty snapshots, idle state, or
+    no-op drive/wait success.</code></pre>
+  <div class="tpl-foot">验收标准写得更狠：<span class="cm">“a table-driven scaffold test covers every public method and <b>proves no unfinished method reports plausible success</b>.”</span> <a class="src" href="https://github.com/earendil-works/pi/blob/ac4ac9eaf69f2b01ca3af984a5c48f3b99b84278/packages/agent/docs/harness-v2.md#L3189" data-expect="proves no unfinished method reports plausible success">harness-v2.md:3189</a></div>
+</div>
+
+<h2>判定三：底座已经完工</h2>
+
+<p>与执行器相反，<b>存储层是真的</b>（详见 <a href="ch07.html">第 07 章</a>）：9 种 record 类型、<code>findOpenOperations</code> 的恢复语义、三个后端（memory / JSONL / SQLite）跑同一套一致性测试。<a class="src" href="https://github.com/earendil-works/pi/blob/ac4ac9eaf69f2b01ca3af984a5c48f3b99b84278/packages/agent/src/harness/session/testing/conformance.ts#L92" data-expect="export function createSessionBackendConformance(">conformance.ts:92</a></p>
+
+<p>所以准确的说法是：<b>durability 的「记什么」已经做完并锁死，「怎么执行」还没开始。</b></p>
+
+<h2>进度：41 个工作包，完成 11 个</h2>
+
+<div class="stats">
+  <div class="stat"><div class="n">41</div><div class="l">工作包总数</div></div>
+  <div class="stat"><div class="n">11</div><div class="l">已勾选完成</div></div>
+  <div class="stat"><div class="n">9</div><div class="l">Track（F/QA/R/J/I/L/H/C-N/O）</div></div>
+  <div class="stat"><div class="n">3</div><div class="l">快照时活跃的 reservation</div></div>
+</div>
+
+<p>计数取自设计文档 §20 的复选框列表（<code>- [x]</code> / <code>- [ ]</code>），由 <a href="../sources.html">溯源索引</a> 的脚本统计，非手写。文档明确划定了范围：<b>本计划不迁移 <code>packages/coding-agent</code></b>。<a class="src" href="https://github.com/earendil-works/pi/blob/ac4ac9eaf69f2b01ca3af984a5c48f3b99b84278/packages/agent/docs/harness-v2.md#L3169" data-expect="this plan does not migrate `packages/coding-agent`">harness-v2.md:3169</a> 换句话说，<b>即便 41 个包全部完成，CLI 也不会自动切过去</b>——那是之后另一件事。</p>
+
+<h2>reserve 协议：多 agent 在一份文档上并行认领</h2>
+
+<p>git log 里那些 <code>docs(agent): reserve I2</code> / <code>unreserve R3</code> 的提交，来自文档里写死的一套认领流程：</p>
+
+<div class="tpl">
+  <div class="tpl-head"><span class="path">packages/agent/docs/harness-v2.md</span><span class="lines literal">原文 L3174</span></div>
+  <pre><code>2. Add `**Reserved: &lt;package-id&gt; by @&lt;username&gt;.**` immediately above the package entry.
+   Land that change alone with commit message `docs(agent): reserve &lt;package-id&gt;`.
+   The package is claimed only after this commit reaches `main`; if another conflicting
+   reservation lands first, remove yours and choose again.</code></pre>
+  <div class="tpl-foot">冲突解决靠「谁先 merge 到 main 谁赢」——用 git 的线性历史当分布式锁。<a class="src" href="https://github.com/earendil-works/pi/blob/ac4ac9eaf69f2b01ca3af984a5c48f3b99b84278/packages/agent/docs/harness-v2.md#L3174" data-expect="docs(agent): reserve">harness-v2.md:3174</a></div>
+</div>
+
+<p>快照时文档里有三处活跃占用，署的都是真实 GitHub 用户名：<a class="src" href="https://github.com/earendil-works/pi/blob/ac4ac9eaf69f2b01ca3af984a5c48f3b99b84278/packages/agent/docs/harness-v2.md#L3307" data-expect="**Reserved: I2 by @vegarsti.**">harness-v2.md:3307</a> <a class="src" href="https://github.com/earendil-works/pi/blob/ac4ac9eaf69f2b01ca3af984a5c48f3b99b84278/packages/agent/docs/harness-v2.md#L3330" data-expect="**Reserved: L1 by @cristinaponcela.**">harness-v2.md:3330</a> 这套协议的完整分析见 <a href="ch19.html">第 19 章</a>。</p>
+
+</section>
+
+<section id="s3">
+  <div class="sec-tag"><span class="cell"></span><span class="lab">§3 Design 设计动机与权衡</span></div>
+  <h2>「宁可抛错，不要看似成功」</h2>
+
+<p>F0 的验收标准值得任何做大重构的人抄走：<b>未完成的方法必须以可识别的方式失败，不能返回空快照、idle 状态或 no-op 成功</b>。</p>
+
+<p>理由在多 agent 并行开发的语境下特别硬：如果 <code>lanes()</code> 暂时返回 <code>[]</code>，另一个包的作者会写出「没有 lane 时走这条路」的逻辑，并让测试通过——一个建立在假象上的实现，等 <code>lanes()</code> 真正实现时才暴露。抛错则让依赖关系<b>在编译期与测试期立刻显形</b>。</p>
+
+<p>代价是 <code>AgentHarness</code> 目前完全不能用，连「试试看」都不行。他们接受了这个代价，并把它写进了验收标准。</p>
+
+<h2>为什么先做存储再做执行</h2>
+
+<p>存储契约定错，上层全部重写；执行器可以在稳定契约上分包替换。所以顺序是：定义 record → 三后端实现 → 一致性测试锁死 → 才轮到执行器。</p>
+
+<p>这也解释了一个外部观察者容易误判的现象：<b>看起来「一年了 harness 还没做完」，实际是底座做完了而门面还没动。</b>门面（22 个方法）恰恰是最后才动的部分，因为它消费所有其它包。</p>
+
+<h2>把 spec 当任务队列，值得吗</h2>
+
+<p>好处很明显：41 个包的依赖关系、主文件、验收标准全部写在一处，新 agent（人或 AI）读一份文档就能开工，认领冲突用 git 解决。</p>
+
+<p>成本也很明显：<b>一份 3437 行、每次认领都要改的文档，本身就是热点文件</b>。而且它同时承担两种职责——「系统应该是什么样」和「谁在做哪块」。前者应该稳定，后者每天在变。文档里已经能看到两者的摩擦：J 轨的所有权标记写着「这项工作在计划被拆成 J0–J6 之前就开始了」，需要一段专门的散文解释历史。<a class="src" href="https://github.com/earendil-works/pi/blob/ac4ac9eaf69f2b01ca3af984a5c48f3b99b84278/packages/agent/docs/harness-v2.md#L3260" data-expect="The work began before this plan was split into J0–J6.">harness-v2.md:3260</a></p>
+
+</section>
+
+<section id="s4">
+  <div class="sec-tag"><span class="cell"></span><span class="lab">§4 Limits 边界与失效条件</span></div>
+  <h2>读这一章时要小心什么</h2>
+
+<ul>
+  <li><b>这一章的保鲜期最短。</b>41 个包在动，本书锚定的是 <code>ac4ac9e</code>。「11/41」这个数字在你读到时几乎肯定已经变了；不变的是判定方法——数 <code>- [x]</code>、数 <code>unavailable()</code> 调用、grep <code>new Agent(</code>。</li>
+  <li><b>「部分落地」是对整章的裁决，不是对每个构件的。</b>同一份文档里，session 存储是<span class="status shipped">已发布</span>，lanes/checkpoints/drive modes 是<span class="status paper">仅设计文档</span>。<a href="ch07.html">第 07 章</a>与本章的状态徽章不同，正是因为它们描述的是这份设计的不同层。</li>
+  <li><b>设计文档不承诺会被实现。</b>没有任何机制保证 30 个未完成的包会完工；它们是计划，不是承诺。把 lanes 当成「pi 的能力」来做技术选型，是拿别人的路线图当自己的依赖。</li>
+  <li><b>即便全部完工，CLI 也不自动受益。</b>文档显式把 <code>packages/coding-agent</code> 排除在迁移范围外。<a class="src" href="https://github.com/earendil-works/pi/blob/ac4ac9eaf69f2b01ca3af984a5c48f3b99b84278/packages/agent/docs/harness-v2.md#L3169" data-expect="this plan does not migrate `packages/coding-agent`">harness-v2.md:3169</a></li>
+</ul>
+
+<p><b>检查过并确认的反面证据</b>：<code>packages/evals/src/pi-harness.ts</code> 里的 "Harness" 是 evals 框架自己的同名类型，与 <code>AgentHarness</code> 无关；<code>packages/protocol/src/schemas.ts</code> 仅在一行注释里提到 <code>AgentHarnessPhase</code>。<a class="src" href="https://github.com/earendil-works/pi/blob/ac4ac9eaf69f2b01ca3af984a5c48f3b99b84278/packages/protocol/src/schemas.ts#L37" data-expect="Matches AgentHarnessPhase so adapters do not need a second phase vocabulary.">schemas.ts:37</a> 二者都不构成生产消费者。</p>
+
+</section>
+
+<section id="s5">
+  <div class="sec-tag"><span class="cell"></span><span class="lab">§5 Takeaway 拿走什么</span></div>
+
+<ul class="takeaway">
+  <li><b>大重构时，让未完成的接口抛专有异常，而不是返回貌似合理的默认值。</b>并把「没有任何未完成方法报告看似成功」写成可执行的验收测试。
+    <span class="cond">适用条件：多人/多 agent 并行开发同一个新接口。<b>单人顺序开发时，空实现的危害小得多。</b></span></li>
+  <li><b>自底向上重写：先锁存储契约，再换执行器。</b>并且用一套跨实现的一致性测试把契约钉死，否则「契约」只是第一个实现的行为。
+    <span class="cond">适用条件：存储格式会变。<b>如果只换执行逻辑、存储不动，这个顺序无意义。</b></span></li>
+  <li><b>评估一个开源项目时，先区分「文档描述的系统」和「运行的系统」。</b>方法很机械：找到生产入口的构造点，从那里往下读；文档里读不到的分叉，代码里一 grep 就现形。
+    <span class="cond">适用条件：项目处于活跃重写期。<b>成熟稳定的项目里文档与代码通常同源。</b></span></li>
+  <li><b>如果要把 spec 当任务队列，考虑把「设计」和「谁在做」拆成两份文件。</b>前者该稳定，后者每天在变；合在一起会让设计文档变成高冲突热点。
+    <span class="cond">pi 没这么做，用「reserve 提交单独落 main」缓解了冲突——<b>代价是每次认领都要一次往返 main 的提交。</b></span></li>
+</ul>
+
+</section>
+
+<section id="quiz">
+  <div class="sec-tag"><span class="cell"></span><span class="lab">§ Self-check 自测</span></div>
+
+<div class="quiz">
+
+<div class="q" data-answer="b">
+  <p class="qprompt"><span class="qtype">场景</span>你今天 <code>npm i @earendil-works/pi-agent-core</code>，构造 <code>AgentHarness</code> 并调 <code>prompt("hi")</code>。会发生什么？</p>
+  <div class="opts">
+    <button class="opt" type="button" data-ch="a">正常跑，走 lanes 执行</button>
+    <button class="opt" type="button" data-ch="b">抛 <code>HarnessNotImplemented</code></button>
+    <button class="opt" type="button" data-ch="c">返回一个空的 <code>RunResult</code></button>
+  </div>
+  <details><summary>看答案</summary><div class="answer">
+    <p><b>B。</b>而且 C 是被<em>刻意排除</em>的选项——F0 的验收标准就是「证明没有任何未完成方法报告看似成功」。<a class="src" href="https://github.com/earendil-works/pi/blob/ac4ac9eaf69f2b01ca3af984a5c48f3b99b84278/packages/agent/docs/harness-v2.md#L3189" data-expect="proves no unfinished method reports plausible success">harness-v2.md:3189</a></p>
+  </div></details>
+</div>
+
+<div class="q" data-answer="c">
+  <p class="qprompt"><span class="qtype">场景</span>harness-v2 的 41 个工作包某天全部勾选完成。此时 pi CLI 的 run 变成崩溃可恢复的了吗？</p>
+  <div class="opts">
+    <button class="opt" type="button" data-ch="a">是，CLI 直接受益</button>
+    <button class="opt" type="button" data-ch="b">是，但要等下一个大版本</button>
+    <button class="opt" type="button" data-ch="c">不是——文档显式把 coding-agent 排除在迁移范围外</button>
+  </div>
+  <details><summary>看答案</summary><div class="answer">
+    <p><b>C。</b>「this plan does not migrate <code>packages/coding-agent</code>」。CLI 切换到新 harness 是这份计划之外的另一件工作。<a class="src" href="https://github.com/earendil-works/pi/blob/ac4ac9eaf69f2b01ca3af984a5c48f3b99b84278/packages/agent/docs/harness-v2.md#L3169" data-expect="this plan does not migrate `packages/coding-agent`">harness-v2.md:3169</a></p>
+  </div></details>
+</div>
+
+<div class="q" data-answer="a">
+  <p class="qprompt"><span class="qtype">场景</span>两个贡献者同时想认领工作包 <code>H0</code>，各自提了一个「reserve H0」的提交。谁拿到？</p>
+  <div class="opts">
+    <button class="opt" type="button" data-ch="a">先 merge 进 main 的那个；另一个撤掉自己的标记重选</button>
+    <button class="opt" type="button" data-ch="b">维护者仲裁</button>
+    <button class="opt" type="button" data-ch="c">两人共同持有，各做一半</button>
+  </div>
+  <details><summary>看答案</summary><div class="answer">
+    <p><b>A。</b>协议原文：「The package is claimed only after this commit reaches <code>main</code>; if another conflicting reservation lands first, remove yours and choose again.」——用 git 的线性历史当分布式锁。<a class="src" href="https://github.com/earendil-works/pi/blob/ac4ac9eaf69f2b01ca3af984a5c48f3b99b84278/packages/agent/docs/harness-v2.md#L3174" data-expect="docs(agent): reserve">harness-v2.md:3174</a></p>
+  </div></details>
+</div>
+
+</div>
+</section>
+
+<div class="next">
+  <a href="ch07.html">← 07 会话持久化</a>
+  <a href="ch09.html">09 pi-ai 的抽象 →</a>
+</div>
+
+<div class="anchor-foot">
+基于 <a href="https://github.com/earendil-works/pi/tree/ac4ac9eaf69f2b01ca3af984a5c48f3b99b84278">earendil-works/pi @ <code>ac4ac9e</code></a>（2026-08-07 快照）。<br>
+仓库 commit 速度约 428/月，行号引用仅对该 SHA 有效。<b>本章保鲜期最短</b>：工作包进度请以 <code>harness-v2.md</code> §20 的复选框为准重新统计。
+</div>
+
+</div>
+<script src="../assets/quiz.js" defer></script>
+</body>
+</html>

@@ -1,0 +1,238 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>19 spec-driven 开发 · Pi 源码解读手册</title>
+<meta name="description" content="reserve L1 / unreserve R3：多 agent 在一份设计文档上并行认领">
+<link rel="icon" type="image/svg+xml" href="../assets/favicon.svg">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@500;700&family=Noto+Sans+SC:wght@400;500;700&family=IBM+Plex+Mono:wght@400;500&display=swap" rel="stylesheet" media="print" onload="this.media='all'">
+<noscript><link href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@500;700&family=Noto+Sans+SC:wght@400;500;700&family=IBM+Plex+Mono:wght@400;500&display=swap" rel="stylesheet"></noscript>
+<link rel="stylesheet" href="../assets/handbook.css">
+<script src="../assets/theme.js"></script>
+</head>
+<body>
+<button class="theme-toggle" type="button" aria-label="切换深色/浅色模式" title="切换深色/浅色模式">
+  <span class="sun" aria-hidden="true">☀️</span><span class="moon" aria-hidden="true">🌙</span>
+</button>
+<div class="wrap">
+<nav class="crumb"><a href="../index.html">← 目录</a> · <a href="../sources.html">溯源索引</a> · <a href="../drift.html">漂移记录</a></nav>
+
+<header class="ch">
+  <div class="bars" aria-hidden="true"><span class="l1"></span><span class="l2 w"></span><span class="l3 f"></span><span class="l4 f"></span></div>
+  <div class="kicker">Part V · Engineering &amp; Governance</div>
+  <h1>19 spec-driven 开发
+    <span class="zh">把设计文档变成任务队列，用 git 当分布式锁</span>
+  </h1>
+  <div class="meta">
+    <span class="status partial">部分落地</span>
+    <span>工作包 <b>41 个 / 9 个 Track</b></span>
+    <span>协议实现 <b>纯人工约定，无代码</b></span>
+  </div>
+</header>
+
+<section id="s1">
+  <div class="sec-tag"><span class="cell"></span><span class="lab">§1 Mental Model 一句话心智模型</span></div>
+  <h2>先记住这一句</h2>
+
+<div class="oneliner"><b>pi 把一份 3437 行的设计文档同时当成三样东西：<em>规格说明、任务看板、和并发控制机制</em>。认领一个工作包 = 往文档里加一行「Reserved by @我」并单独提交；谁的提交先进 main 谁拿到。</b></div>
+
+<p>这一章的状态徽章是<b>部分落地</b>，但含义与 <a href="ch08.html">第 08 章</a> 不同：那里是「设计已写、代码未实现」；这里是<b>协议本身完全没有代码</b>——没有 bot、没有 workflow、没有校验器。它靠的是人和 agent 读文档、照做。</p>
+
+<p>值得研究的原因也在这里：它是一套<b>零实现成本</b>的并发协议，而且真的在跑（git log 里有 8 次 reserve/unreserve 提交，文档里有 3 处活跃占用）。</p>
+
+</section>
+
+<section id="s2">
+  <div class="sec-tag"><span class="cell"></span><span class="lab">§2 Evidence 代码实证</span></div>
+  <h2>协议全文</h2>
+
+<div class="tpl">
+  <div class="tpl-head"><span class="path">packages/agent/docs/harness-v2.md §20</span><span class="lines rewritten">改写自 L3172–L3182（编号保留，散文压缩）</span></div>
+  <pre><code>1. 与 main 同步。一个包可认领，当且仅当：复选框为空、依赖全部已勾选、
+   且没有活跃 reservation 占用它或与之重叠的主文件。
+2. 在包条目正上方加一行 `**Reserved: &lt;id&gt; by @&lt;user&gt;.**`，
+   <span class="cm bone">单独</span>提交，消息为 `docs(agent): reserve &lt;id&gt;`。
+   <span class="cm slot">该提交进入 main 之后，认领才成立；若有冲突的 reservation 先落地，撤掉自己的重选。</span>
+3. 从 reservation 提交开始工作。读引用的设计与主文件。
+4. 循环：实现 → 为每条自己拥有的不变量写可执行断言 → 迭代到全绿。
+   <span class="cm">设计不成立时停下，去 Discord 找 Mario 谈；达成一致后改设计再回到第 1 步。</span>
+5. 跑 `npm run check`。实现的 PR 顺手删掉自己的 reservation 并勾上复选框。
+   放弃则只删 reservation，不勾。</code></pre>
+  <div class="tpl-foot"><b>这是改写</b>：原文是英文散文，此处压缩并保留步骤编号。逐字原文见 <a class="src" href="https://github.com/earendil-works/pi/blob/ac4ac9eaf69f2b01ca3af984a5c48f3b99b84278/packages/agent/docs/harness-v2.md#L3174" data-expect="docs(agent): reserve">harness-v2.md:3174</a></div>
+</div>
+
+<h2>四个设计细节</h2>
+
+<p><b>① 冲突解决用 git 的线性历史。</b>「该提交进入 main 之后，认领才成立；若有冲突的 reservation 先落地，撤掉自己的重选。」——不需要任何服务、任何状态机。<b>main 分支的顺序就是锁的仲裁顺序。</b></p>
+
+<p><b>② 认领必须单独提交。</b>「Land that change alone」。这样 reservation 与实现分离，认领可以在几分钟内进 main，而不必等实现写完——锁的持有窗口才不会因为 review 时间被拉长。</p>
+
+<p><b>③ 依赖是显式的、可机读的。</b>每个包写「Dependencies: none」或列出前置包，可认领条件包含「依赖全部已勾选」。41 个包因此构成一张 DAG，而不是一个待办列表。</p>
+
+<p><b>④ 验收标准要求可执行断言，明确排斥冒烟测试。</b>「Smoke tests and happy-path coverage alone are insufficient; each owned invariant must have an executable assertion.」<a class="src" href="https://github.com/earendil-works/pi/blob/ac4ac9eaf69f2b01ca3af984a5c48f3b99b84278/packages/agent/docs/harness-v2.md#L3178" data-expect="each owned invariant must have an executable assertion">harness-v2.md:3178</a></p>
+
+<h2>还有一张「谁拥有哪个公开方法」的表</h2>
+
+<div class="tpl">
+  <div class="tpl-head"><span class="path">packages/agent/docs/harness-v2.md</span><span class="lines literal">原文 L3193–L3197（表格节录前两行）</span></div>
+  <pre><code>This table is exhaustive. A package does not remove `HarnessNotImplemented` from a
+method until it owns the listed semantics and tests.
+
+| public surface | owning package |
+|---|---|
+| scaffold-safe `name`, `getLeafId`, record-free create, runtime settings | F0 |
+| `AgentHarness.create()` restore and `suspended` inventory | R3 |</code></pre>
+  <div class="tpl-foot">这张表把 <a href="ch08.html">第 08 章</a>那 22 个抛错的方法逐个指派给了工作包。<b>「不拥有就不许摘掉 HarnessNotImplemented」</b>是全套协议里最硬的一条。<a class="src" href="https://github.com/earendil-works/pi/blob/ac4ac9eaf69f2b01ca3af984a5c48f3b99b84278/packages/agent/docs/harness-v2.md#L3193" data-expect="This table is exhaustive.">harness-v2.md:3193</a></div>
+</div>
+
+<h2>协议在 git 历史里的痕迹</h2>
+
+<div class="tpl">
+  <div class="tpl-head"><span class="path">git log --oneline --all | grep -E 'reserve'</span><span class="lines rewritten">命令输出，非源码</span></div>
+  <pre><code>4bf1bba20 docs(agent): reserve I2
+102667952 docs(agent): unreserve R3
+d406aa394 docs: reserve L1
+9859eaa26 docs: reserve QA2
+8ed232548 docs: reserve QA1
+69bab864d docs(agent): reserve harness v2 R3
+abac29f67 docs(agent): reserve harness R2 work package
+290136253 docs(agent): reserve harness I0 and L1-L3 work packages
+ea7bfdc08 docs(agent): unreserve R2 work package
+afdf73661 docs(agent): reserve harness R1 work package
+f909da2bf docs(agent): reserve harness R0 work package</code></pre>
+  <div class="tpl-foot">注意 <code>unreserve R2</code> 与 <code>unreserve R3</code>——<b>放弃是协议的正常路径，不是异常</b>。第 5 步显式写了「放弃则只删 reservation，不勾复选框」。</div>
+</div>
+
+<p>快照时文档里有 3 处活跃占用，两处是标准格式，一处是历史特例——J 轨的所有权标记附了一段散文，解释这项工作在计划被拆成 J0–J6 之前就开始了。<a class="src" href="https://github.com/earendil-works/pi/blob/ac4ac9eaf69f2b01ca3af984a5c48f3b99b84278/packages/agent/docs/harness-v2.md#L3260" data-expect="The work began before this plan was split into J0–J6.">harness-v2.md:3260</a></p>
+
+<h2>范围也写死了</h2>
+
+<p>「工作限于 <code>packages/agent</code>、<code>packages/session-backends/sqlite-node</code>、<code>packages/telemetry</code>，以及 <code>packages/ai</code> 中的 telemetry 请求选项面。其它包的源码禁止触碰。」<a class="src" href="https://github.com/earendil-works/pi/blob/ac4ac9eaf69f2b01ca3af984a5c48f3b99b84278/packages/agent/docs/harness-v2.md#L3169" data-expect="Other package source is off limits.">harness-v2.md:3169</a></p>
+
+<p>在一个允许多个 agent 并行开工的仓库里，<b>包级的文件所有权边界是防止互相踩踏的第一道防线</b>——比 <a href="ch17.html">第 17 章</a> 的 git 纪律更靠前。</p>
+
+</section>
+
+<section id="s3">
+  <div class="sec-tag"><span class="cell"></span><span class="lab">§3 Design 设计动机与权衡</span></div>
+  <h2>为什么不用 GitHub Issues</h2>
+
+<p>Issues 天然就是任务队列，还自带认领（assignee）。pi 没用，原因推得出来但<b>未见公开论述</b>：</p>
+
+<ul>
+  <li><b>规格与任务在同一个文件里，同一次提交可以同时改两者。</b>用 Issues 就得在两处维护，且必然漂移。</li>
+  <li><b>依赖关系在文档里是「上下文相邻」的。</b>读 R3 的描述时，R0–R2 就在旁边。Issue 之间的依赖只能靠链接。</li>
+  <li><b>agent 读一个文件比调 GitHub API 简单得多。</b>这条对「让 agent 自己认领任务」这个用法是决定性的。</li>
+</ul>
+
+<p>代价是把一个高频变更的看板塞进了一个应该稳定的规格文件——下面这条。</p>
+
+<h2>一份文件承担两种寿命</h2>
+
+<p>「系统应该长什么样」应该稳定；「谁在做哪一块」每天都在变。合在一起的直接后果是：<b>一份 3437 行的文件成为高冲突热点</b>，而且它的 git 历史里混杂着两类完全不同的变更——设计修订和进度更新。</p>
+
+<p>「reservation 单独提交」缓解了冲突（改动小、进 main 快），但没有消除根因。J 轨那段解释历史的散文就是症状：<b>当看板结构本身演化时（计划被拆成 J0–J6），你需要在规格文件里写一段散文解释历史</b>。</p>
+
+<h2>「协议无实现」是优点还是缺陷</h2>
+
+<p>优点是显然的：零构建成本、零维护成本、任何能读 markdown 和用 git 的参与者（人或 agent）都能立刻加入。</p>
+
+<p>缺点同样显然：没有任何东西阻止两个人同时勾同一个框，也没有任何东西检测「reservation 挂了三个月没人动」。整个机制的执行力等同于参与者的自觉——<b>与 <a href="ch17.html">第 17 章</a> 的 <code>AGENTS.md</code> 是同一种赌注</b>。</p>
+
+<p>在当前规模（3 处活跃占用、少数几个 track 同时开工）这个赌注赢面很大。<b>它的失效条件不是「有人作弊」，而是「参与人数上升到没人能记住谁在做什么」。</b></p>
+
+<h2>这套东西真正新颖的地方</h2>
+
+<p>把设计文档当任务队列不新鲜（Kubernetes 的 KEP、Rust 的 RFC 都类似）。pi 这套的特别之处是<b>它是为「参与者可能是 agent」设计的</b>：</p>
+
+<ul>
+  <li>认领动作是一次<b>文件编辑 + 一次提交</b>——agent 最擅长的两件事；</li>
+  <li>可认领条件是<b>可机读的谓词</b>（复选框空 + 依赖全勾 + 无重叠 reservation），不需要判断力；</li>
+  <li>失败路径明确（冲突就撤掉重选），不需要谈判；</li>
+  <li>唯一需要人的地方被显式标出来了：<b>「设计不成立时，去 Discord 找 Mario」</b>。</li>
+</ul>
+
+<p>最后一条最关键：<b>协议把「什么时候必须找人」写进了流程</b>，而不是指望 agent 自己意识到该求助。</p>
+
+</section>
+
+<section id="s4">
+  <div class="sec-tag"><span class="cell"></span><span class="lab">§4 Limits 边界与失效条件</span></div>
+
+<ul>
+  <li><b>无实现 = 无强制。</b>没有 bot 检查 reservation 冲突、检查复选框与实际代码是否一致、或回收僵尸 reservation。全靠自觉。</li>
+  <li><b>「先进 main 者胜」在 PR 队列长时体验很差。</b>你的 reservation 提交要排队 review，排队期间别人可能已经落地了冲突的认领。协议要求你「撤掉重选」——但工作可能已经开始了。</li>
+  <li><b>复选框与代码可能不一致。</b>没有任何东西保证「F0 已勾选」对应「F0 的验收标准真的满足」。本书通过读代码交叉验证了 F0（22 个抛错方法确实存在），但这属于人工核对，没有自动化。</li>
+  <li><b>不可移植到没有单一权威的项目。</b>「设计不成立就去 Discord 找 Mario」——这套协议的争议解决机制是<b>一个具名的人</b>。没有这样一个人的项目照抄不了。</li>
+  <li><b>规格文件的 git 历史被进度更新稀释。</b>想追溯「这个设计决定是什么时候改的、为什么」，要在几十次 reserve/unreserve 提交里翻找。</li>
+</ul>
+
+<p><b>检查过并确认</b>：8 次 reserve/unreserve 提交中有 2 次是 <code>unreserve</code>，说明放弃路径被真实使用过；且 <code>unreserve R2</code>（<code>ea7bfdc08</code>）与后来的 <code>reserve harness v2 R3</code>（<code>69bab864d</code>）分属不同工作包，不构成同一包的反复占用。</p>
+
+</section>
+
+<section id="s5">
+  <div class="sec-tag"><span class="cell"></span><span class="lab">§5 Takeaway 拿走什么</span></div>
+
+<ul class="takeaway">
+  <li><b>用「单独提交一行认领标记 + 先进主干者胜」当分布式锁。</b>零基础设施，git 已经提供了你需要的全部原子性与顺序性。
+    <span class="cond">适用条件：主干合并是线性的、认领提交能快速合入。<b>PR 队列以天计的项目会让这个锁失效。</b></span></li>
+  <li><b>把「什么时候必须停下来找人」写进流程本身。</b>pi 写的是「设计不成立时，去 Discord 找 Mario」——具体到人和渠道。
+    <span class="cond">适用条件：执行者是 agent 或新人。<b>这是本章最该抄的一条：agent 不会自己意识到该求助。</b></span></li>
+  <li><b>可认领条件要写成机读谓词，不要写成判断题。</b>「复选框为空 + 依赖全勾 + 无重叠 reservation」任何参与者都能自己判定，不需要问维护者。
+    <span class="cond">适用条件：你希望参与者自助认领。<b>需要维护者分派的项目不需要这一层。</b></span></li>
+  <li><b>但要考虑把「设计」和「进度」拆成两份文件。</b>pi 没拆，代价是规格文件成了高冲突热点，且它的 git 历史里设计修订与进度更新混在一起。
+    <span class="cond">拆开的代价是两处维护、必然漂移——<b>这是个真实的两难，pi 选了一边并承担了它。</b></span></li>
+</ul>
+
+</section>
+
+<section id="quiz">
+  <div class="sec-tag"><span class="cell"></span><span class="lab">§ Self-check 自测</span></div>
+
+<div class="quiz">
+
+<div class="q" data-answer="c">
+  <p class="qprompt"><span class="qtype">场景</span>你想认领工作包 <code>H0</code>，但它依赖的 <code>R3</code> 复选框还是空的。协议允许你开工吗？</p>
+  <div class="opts">
+    <button class="opt" type="button" data-ch="a">允许，依赖只是建议顺序</button>
+    <button class="opt" type="button" data-ch="b">允许，但要在 reservation 里注明</button>
+    <button class="opt" type="button" data-ch="c">不允许——可认领条件要求依赖<b>全部</b>已勾选</button>
+  </div>
+  <details><summary>看答案</summary><div class="answer">
+    <p><b>C。</b>第 1 步：「a package is claimable only when its checkbox is empty, <b>every dependency is checked</b>, and no active reservation owns the package or overlapping primary files」——三个条件全要满足。<a class="src" href="https://github.com/earendil-works/pi/blob/ac4ac9eaf69f2b01ca3af984a5c48f3b99b84278/packages/agent/docs/harness-v2.md#L3173" data-expect="every dependency is checked">harness-v2.md:3173</a></p>
+  </div></details>
+</div>
+
+<div class="q" data-answer="b">
+  <p class="qprompt"><span class="qtype">场景</span>你做到一半发现设计有问题。协议要求你怎么办？</p>
+  <div class="opts">
+    <button class="opt" type="button" data-ch="a">自己改设计文档，继续做</button>
+    <button class="opt" type="button" data-ch="b">停下，去 Discord 找 Mario 谈；达成一致后改设计和包描述，再回到第 1 步</button>
+    <button class="opt" type="button" data-ch="c">提 issue 等回复</button>
+  </div>
+  <details><summary>看答案</summary><div class="answer">
+    <p><b>B。</b>原文：「If the design does not hold, stop and consult Mario on Discord. After agreement, update the design and package description, then return to step 1.」注意「return to step 1」——设计改了要重新走认领流程。<a class="src" href="https://github.com/earendil-works/pi/blob/ac4ac9eaf69f2b01ca3af984a5c48f3b99b84278/packages/agent/docs/harness-v2.md#L3180" data-expect="stop and consult Mario on Discord">harness-v2.md:3180</a></p>
+  </div></details>
+</div>
+
+</div>
+</section>
+
+<div class="next">
+  <a href="ch18.html">← 18 贡献者门禁</a>
+  <a href="ch20.html">20 借鉴清单与失效条件 →</a>
+</div>
+
+<div class="anchor-foot">
+基于 <a href="https://github.com/earendil-works/pi/tree/ac4ac9eaf69f2b01ca3af984a5c48f3b99b84278">earendil-works/pi @ <code>ac4ac9e</code></a>（2026-08-07 快照）。<br>
+仓库 commit 速度约 428/月，行号引用仅对该 SHA 有效。
+</div>
+
+</div>
+<script src="../assets/quiz.js" defer></script>
+</body>
+</html>

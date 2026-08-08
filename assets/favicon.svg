@@ -1,0 +1,8 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 32">
+  <!-- 三层抽象条带母题：coding-agent / ai / agent-core。
+       favicon 无法引用页面 CSS 变量，此处为唯一写死颜色的位置（见 handbook.css 抬头说明）。 -->
+  <rect width="32" height="32" rx="6" fill="#12181F"/>
+  <rect x="5" y="9"  width="22" height="4" rx="2" fill="#4A7FE0"/>
+  <rect x="5" y="15" width="14" height="4" rx="2" fill="#4A7FE0" opacity=".75"/>
+  <rect x="5" y="21" width="8"  height="4" rx="2" fill="#46535F"/>
+</svg>

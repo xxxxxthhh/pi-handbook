@@ -1,0 +1,123 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>术语表 · Pi 源码解读手册</title>
+<meta name="description" content="英文术语 → 中文解释 → 首次出现章节">
+<link rel="icon" type="image/svg+xml" href="assets/favicon.svg">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@500;700&family=Noto+Sans+SC:wght@400;500;700&family=IBM+Plex+Mono:wght@400;500&display=swap" rel="stylesheet" media="print" onload="this.media='all'">
+<noscript><link href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@500;700&family=Noto+Sans+SC:wght@400;500;700&family=IBM+Plex+Mono:wght@400;500&display=swap" rel="stylesheet"></noscript>
+<link rel="stylesheet" href="assets/handbook.css">
+<script src="assets/theme.js"></script>
+</head>
+<body>
+<button class="theme-toggle" type="button" aria-label="切换深色/浅色模式" title="切换深色/浅色模式">
+  <span class="sun" aria-hidden="true">☀️</span><span class="moon" aria-hidden="true">🌙</span>
+</button>
+<div class="wrap">
+<nav class="crumb"><a href="index.html">← 目录</a> · <a href="sources.html">溯源索引</a> · <a href="drift.html">漂移记录</a></nav>
+
+<header class="book-head">
+  <div class="bars" aria-hidden="true"><span class="l1"></span><span class="l2"></span><span class="l3"></span><span class="l4 f"></span></div>
+  <div class="kicker">Glossary</div>
+  <h1>术语表<span class="zh">英文术语保留原文，不翻译</span></h1>
+  <p class="lede">本书正文中代码、类型名、文件路径、专有名词一律保留英文（<code>AgentMessage</code> 不写成「智能体消息」）。此表给出中文解释与首次出现的章节。「首见」列由脚本扫描章节文件推导，非手写。</p>
+  <div class="meta"><span>术语 <b>34</b></span><span>分类 <b>10</b></span><span>锚定 <b><code>ac4ac9e</code></b></span></div>
+</header>
+
+<div class="part">
+  <div class="part-head"><span class="no">核心</span><h2>&nbsp;</h2><span class="tag">7 条</span></div>
+  <div class="tbl-scroll"><table><thead><tr><th>术语</th><th>中文解释</th><th>首见</th></tr></thead><tbody>
+<tr><td><code>agent loop</code></td><td>「调模型 → 跑工具 → 再调模型」的循环。pi 的实现是双层 while：内层收工具与 steering，外层等 follow-up。</td><td class="chs"><a href="chapters/ch02.html">02</a></td></tr>
+<tr><td><code>AgentMessage</code></td><td>pi 会话内部的消息类型，比 LLM 认的三种 role 多出 bashExecution / custom / branchSummary / compactionSummary。</td><td class="chs"><a href="chapters/ch02.html">02</a></td></tr>
+<tr><td><code>steering</code></td><td>「插话」。在 agent 跑动过程中注入的消息，在每个 turn 结束后被轮询，下一个 turn 生效。</td><td class="chs"><a href="chapters/ch03.html">03</a></td></tr>
+<tr><td><code>follow-up</code></td><td>「追加」。只在 agent 本该停下时才被轮询的消息队列；有的话就再跑一轮。</td><td class="chs"><a href="chapters/ch03.html">03</a></td></tr>
+<tr><td><code>terminate</code></td><td>工具结果上的标志，提示循环可以提前收工。判定是「全票通过」——一批里全部标了才生效。</td><td class="chs"><a href="chapters/ch03.html">03</a></td></tr>
+<tr><td><code>convertToLlm</code></td><td>把 AgentMessage[] 映射成 LLM 认的 Message[] 的必填函数。四种自定义 role 全被压成 user。</td><td class="chs"><a href="chapters/ch05.html">05</a></td></tr>
+<tr><td><code>transformContext</code></td><td>每次 LLM 调用前改写上下文的可选钩子。在 coding-agent 里等于「扩展说了算」。</td><td class="chs"><a href="chapters/ch05.html">05</a></td></tr>
+</tbody></table></div>
+</div>
+<div class="part">
+  <div class="part-head"><span class="no">上下文</span><h2>&nbsp;</h2><span class="tag">5 条</span></div>
+  <div class="tbl-scroll"><table><thead><tr><th>术语</th><th>中文解释</th><th>首见</th></tr></thead><tbody>
+<tr><td><code>compaction</code></td><td>上下文压缩。在合法切点上把前半段换成一段 LLM 生成的摘要，结果写进会话文件。</td><td class="chs"><a href="chapters/ch02.html">02</a></td></tr>
+<tr><td><code>cut point</code></td><td>压缩的切点。合法性由 role 白名单决定，toolResult 永远不是合法切点。</td><td class="chs"><a href="chapters/ch06.html">06</a></td></tr>
+<tr><td><code>keepRecentTokens</code></td><td>压缩时想保留的近期 token 数（默认 20000）。因为切点要往前滑，实际保留量总是 ≥ 该值。</td><td class="chs"><a href="chapters/ch06.html">06</a></td></tr>
+<tr><td><code>reserveTokens</code></td><td>触发压缩的余量（默认 16384）。留给模型回答用，不是安全余量。</td><td class="chs"><a href="chapters/ch06.html">06</a></td></tr>
+<tr><td><code>branch summarization</code></td><td>/tree 导航切换分支时生成的摘要，与压缩共用摘要格式。</td><td class="chs"><a href="chapters/ch05.html">05</a></td></tr>
+</tbody></table></div>
+</div>
+<div class="part">
+  <div class="part-head"><span class="no">会话</span><h2>&nbsp;</h2><span class="tag">5 条</span></div>
+  <div class="tbl-scroll"><table><thead><tr><th>术语</th><th>中文解释</th><th>首见</th></tr></thead><tbody>
+<tr><td><code>entry</code></td><td>会话日志里的一条记录，带 id / seq / parentId / timestamp。树结构由 parentId 隐式构成。</td><td class="chs"><a href="chapters/ch06.html">06</a></td></tr>
+<tr><td><code>record</code></td><td>v4 新增的执行痕迹（operation_started 等 9 种），供崩溃恢复用。v3 会话里没有。</td><td class="chs"><a href="chapters/ch07.html">07</a></td></tr>
+<tr><td><code>lane</code></td><td>harness-v2 概念：会话树上的一个具名位置，每个 lane 同时最多跑一个操作。<b>执行层尚未实现</b>。</td><td class="chs"><a href="chapters/ch03.html">03</a></td></tr>
+<tr><td><code>session v3 / v4</code></td><td>CLI 当前写 v3；新 harness 栈写 v4（含 record）。v4 能读 v3，但只能恢复到 idle。</td><td class="chs"><a href="chapters/ch07.html">07</a></td></tr>
+<tr><td><code>fork</code></td><td>复制会话。scope: "branch" 只复制到某 entry 的路径，scope: "tree" 复制整棵树。</td><td class="chs"><a href="chapters/ch07.html">07</a></td></tr>
+</tbody></table></div>
+</div>
+<div class="part">
+  <div class="part-head"><span class="no">harness-v2</span><h2>&nbsp;</h2><span class="tag">3 条</span></div>
+  <div class="tbl-scroll"><table><thead><tr><th>术语</th><th>中文解释</th><th>首见</th></tr></thead><tbody>
+<tr><td><code>HarnessNotImplemented</code></td><td>AgentHarness 未完成方法统一抛出的错误。22 个方法用它——这是工作包 F0 的<b>交付物</b>，不是疏漏。</td><td class="chs"><a href="chapters/ch08.html">08</a></td></tr>
+<tr><td><code>work package</code></td><td>设计文档 §20 里的一个可认领任务单元。共 41 个，分 9 个 Track，构成一张依赖 DAG。</td><td class="chs"><a href="chapters/ch19.html">19</a></td></tr>
+<tr><td><code>reserve / unreserve</code></td><td>认领协议：往设计文档加一行 Reserved 标记并单独提交；先进 main 者得。放弃则删标记不勾复选框。</td><td class="chs"><a href="chapters/ch08.html">08</a></td></tr>
+</tbody></table></div>
+</div>
+<div class="part">
+  <div class="part-head"><span class="no">pi-ai</span><h2>&nbsp;</h2><span class="tag">3 条</span></div>
+  <div class="tbl-scroll"><table><thead><tr><th>术语</th><th>中文解释</th><th>首见</th></tr></thead><tbody>
+<tr><td><code>provider</code></td><td>一家 LLM 服务的接入实现。仓库有 39 个 *.models.ts，其中含同厂商的不同接入方式与区域变体。</td><td class="chs"><a href="chapters/ch00.html">00</a></td></tr>
+<tr><td><code>models.generated.ts</code></td><td>汇总全部 provider 模型目录的生成文件。真实数据在 gitignore 掉的 data/*.json 里，构建时拉取。</td><td class="chs"><a href="chapters/ch09.html">09</a></td></tr>
+<tr><td><code>tool calling</code></td><td>函数调用。pi-ai 只收录支持它的模型——这条收录标准把它与通用 LLM SDK 区分开。</td><td class="chs"><a href="chapters/ch02.html">02</a></td></tr>
+</tbody></table></div>
+</div>
+<div class="part">
+  <div class="part-head"><span class="no">TUI</span><h2>&nbsp;</h2><span class="tag">1 条</span></div>
+  <div class="tbl-scroll"><table><thead><tr><th>术语</th><th>中文解释</th><th>首见</th></tr></thead><tbody>
+<tr><td><code>differential rendering</code></td><td>只重画变化的行，而不是整屏重绘。配合终端的 synchronized output 做到无闪烁。</td><td class="chs"><a href="chapters/ch11.html">11</a></td></tr>
+</tbody></table></div>
+</div>
+<div class="part">
+  <div class="part-head"><span class="no">扩展</span><h2>&nbsp;</h2><span class="tag">3 条</span></div>
+  <div class="tbl-scroll"><table><thead><tr><th>术语</th><th>中文解释</th><th>首见</th></tr></thead><tbody>
+<tr><td><code>extension</code></td><td>同进程运行的 TypeScript 模块，权限与 pi 进程相同。可覆盖内建工具、改上下文、接管渲染。</td><td class="chs"><a href="chapters/ch00.html">00</a></td></tr>
+<tr><td><code>skill</code></td><td>写成 SKILL.md 的可复用工作流，模型可按需调用。pi 自己带一个 add-llm-provider。</td><td class="chs"><a href="chapters/ch08.html">08</a></td></tr>
+<tr><td><code>prompt template</code></td><td>.pi/prompts/*.md，带 YAML frontmatter 的可调用 prompt（/wr、/cl、/sa 等）。</td><td class="chs"><a href="chapters/ch13.html">13</a></td></tr>
+</tbody></table></div>
+</div>
+<div class="part">
+  <div class="part-head"><span class="no">安全</span><h2>&nbsp;</h2><span class="tag">2 条</span></div>
+  <div class="tbl-scroll"><table><thead><tr><th>术语</th><th>中文解释</th><th>首见</th></tr></thead><tbody>
+<tr><td><code>project trust</code></td><td>控制 pi <b>启动时加载哪些项目资源</b>的守卫。<b>不是沙箱</b>——它不限制运行起来之后能碰什么。</td><td class="chs"><a href="chapters/ch12.html">12</a></td></tr>
+<tr><td><code>Gondolin</code></td><td>本地 Linux micro-VM。作为扩展把内建工具与 ! 命令路由进 VM，同时把凭证留在宿主。</td><td class="chs"><a href="chapters/ch02.html">02</a></td></tr>
+</tbody></table></div>
+</div>
+<div class="part">
+  <div class="part-head"><span class="no">供应链</span><h2>&nbsp;</h2><span class="tag">3 条</span></div>
+  <div class="tbl-scroll"><table><thead><tr><th>术语</th><th>中文解释</th><th>首见</th></tr></thead><tbody>
+<tr><td><code>min-release-age</code></td><td>npm 解析依赖时跳过发布不足 N 天的版本。pi 设为 2，专挡「发布后数小时内被发现」的投毒。</td><td class="chs"><a href="chapters/ch16.html">16</a></td></tr>
+<tr><td><code>shrinkwrap</code></td><td>发布的 CLI 包内附 npm-shrinkwrap.json，为 npm 用户钉死传递依赖。</td><td class="chs"><a href="chapters/ch16.html">16</a></td></tr>
+<tr><td><code>trusted publishing</code></td><td>经 GitHub Actions OIDC 发布 npm 包，无需本地长期 token / OTP。</td><td class="chs"><a href="chapters/ch16.html">16</a></td></tr>
+</tbody></table></div>
+</div>
+<div class="part">
+  <div class="part-head"><span class="no">治理</span><h2>&nbsp;</h2><span class="tag">2 条</span></div>
+  <div class="tbl-scroll"><table><thead><tr><th>术语</th><th>中文解释</th><th>首见</th></tr></thead><tbody>
+<tr><td><code>lgtm / lgtmi</code></td><td>维护者授权命令。lgtmi 只开 issue，lgtm 开 issue + PR。必须出现在回复开头或结尾。</td><td class="chs"><a href="chapters/ch18.html">18</a></td></tr>
+<tr><td><code>auto-close</code></td><td>新贡献者的 issue 与 PR 默认自动关闭，维护者每日审阅并重开值得的。</td><td class="chs"><a href="chapters/ch18.html">18</a></td></tr>
+</tbody></table></div>
+</div>
+
+<div class="anchor-foot">
+基于 <a href="https://github.com/earendil-works/pi/tree/ac4ac9eaf69f2b01ca3af984a5c48f3b99b84278">earendil-works/pi @ <code>ac4ac9e</code></a>（2026-08-07 快照）。<br>
+本页由 <code>tools/gen-glossary.mjs</code> 生成；术语收录靠人工判断，章节归属靠脚本推导。
+</div>
+
+</div>
+</body>
+</html>

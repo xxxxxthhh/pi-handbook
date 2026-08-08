@@ -1,0 +1,403 @@
+/* ============================================================
+   Pi 源码解读手册 · 共享样式
+   与系列前作（期权 / AI 系统工程 / CCAR / 算法面试手册）同一视觉体系，
+   dark mode 为默认主题，light 需手动切换。
+
+   语义色约定（本书重映射，见 SKELETON §2）：
+     --accent 蓝  = 已发布：代码在 HEAD 上跑，断言可信
+     --warn   橙  = 部分落地 / 文档漂移 / 风险：读者需自己核
+     --mute   灰  = 仅设计文档：只存在于 markdown，代码里找不到
+     --ok     绿  = quiz 正确答案
+   所有颜色（含 SVG 内部）一律引用 CSS 变量，唯一例外是 @media print 中
+   强制浅色主题的那组写死值，以及 favicon（无法引用页面变量）。
+   ============================================================ */
+
+/* ---------- 默认：深色 ---------- */
+:root{
+  --paper:#12181F;
+  --ink:#E4EAEF;
+  --ink-soft:#9AA9B5;
+  --accent:#4A7FE0;
+  --accent-soft:#22354E;
+  --warn:#D9602C;
+  --warn-soft:#3D2417;
+  --mute:#46535F;
+  --line:#2A3641;
+  --card:#1A222C;
+  --code-bg:#1E2731;
+  --tool-bg:#171F28;
+  --answer-bg:#161E27;
+  --head-bg:#0C1116;
+  --head-fg:#E4EAEF;
+  --ok:#3E9E6B;
+  --on-fill:#FFFFFF;
+  --mono:'IBM Plex Mono',ui-monospace,monospace;
+  --disp:'Space Grotesk','Noto Sans SC',sans-serif;
+  --body:'Noto Sans SC',system-ui,sans-serif;
+}
+/* ---------- 手动切到浅色 ---------- */
+html[data-theme="light"]{
+  --paper:#F7F8F6;
+  --ink:#1B2733;
+  --ink-soft:#4A5A68;
+  --accent:#2F6DE0;
+  --accent-soft:#DCE7FB;
+  --warn:#E0632F;
+  --warn-soft:#FBE6DA;
+  --mute:#C6CDD2;
+  --line:#D8DDDE;
+  --card:#FFFFFF;
+  --code-bg:#EDF0EE;
+  --tool-bg:#F1F3F0;
+  --answer-bg:#FBFCFA;
+  --head-bg:#1B2733;
+  --head-fg:#FFFFFF;
+  --ok:#2C7A54;
+  --on-fill:#FFFFFF;
+}
+*{box-sizing:border-box;margin:0;padding:0}
+html{scroll-behavior:smooth}
+body{background:var(--paper);color:var(--ink);font-family:var(--body);line-height:1.85;font-size:16px;transition:background .25s ease,color .25s ease}
+
+/* ---------- theme toggle ---------- */
+.theme-toggle{position:fixed;top:18px;right:18px;z-index:10;width:42px;height:42px;border-radius:50%;
+  border:1px solid var(--line);background:var(--card);color:var(--ink);cursor:pointer;
+  font-size:18px;line-height:1;display:flex;align-items:center;justify-content:center;
+  box-shadow:0 2px 10px rgba(0,0,0,.28)}
+.theme-toggle:hover{border-color:var(--accent)}
+.theme-toggle:focus-visible{outline:2px solid var(--accent);outline-offset:2px}
+/* 默认深色 → 默认显示「切到浅色」的太阳；手动切浅色后显示月亮 */
+.theme-toggle .moon{display:none}
+.theme-toggle .sun{display:inline}
+html[data-theme="light"] .theme-toggle .moon{display:inline}
+html[data-theme="light"] .theme-toggle .sun{display:none}
+
+a{color:var(--accent)}
+.wrap{max-width:860px;margin:0 auto;padding:0 24px 96px}
+
+/* ---------- 面包屑 ---------- */
+.crumb{padding:22px 0 0;font-family:var(--mono);font-size:12.5px;color:var(--ink-soft)}
+.crumb a{text-decoration:none}
+.crumb a:hover{text-decoration:underline}
+
+/* ---------- signature 母题：三层抽象条带 ----------
+   三条带自下而上 = pi-ai / pi-agent-core / pi-coding-agent。
+   宽度按各层真实 LOC 粗略配比（58k / 21k / 124k），不是装饰性随机数。 */
+header.ch{padding:36px 0 40px;border-bottom:2px solid var(--ink)}
+.bars{display:flex;flex-direction:column;gap:5px;margin-bottom:28px;max-width:420px}
+.bars span{display:block;height:11px;border-radius:3px;background:var(--accent);opacity:.85}
+.bars span.w{background:var(--warn)}
+.bars span.f{background:var(--mute)}
+.bars .l1{width:100%}   /* coding-agent：最厚 */
+.bars .l2{width:46%}    /* ai */
+.bars .l3{width:26%}    /* agent-core */
+.bars .l4{width:14%}    /* 其余小包 */
+.kicker{font-family:var(--disp);font-weight:700;letter-spacing:.14em;font-size:12px;text-transform:uppercase;color:var(--ink-soft)}
+h1{font-family:var(--disp);font-weight:700;font-size:clamp(28px,5vw,44px);line-height:1.2;margin:10px 0 6px}
+h1 .zh{display:block;font-family:var(--body);font-weight:700;font-size:.62em;color:var(--ink-soft);margin-top:6px}
+.meta{display:flex;flex-wrap:wrap;gap:14px;margin-top:18px;font-family:var(--mono);font-size:12.5px;color:var(--ink-soft)}
+.meta b{color:var(--ink)}
+
+/* ---------- section markers ---------- */
+section{margin-top:60px}
+.sec-tag{display:flex;align-items:center;gap:10px;margin-bottom:14px}
+.sec-tag .cell{width:14px;height:14px;border-radius:2px;background:var(--accent)}
+.sec-tag .lab{font-family:var(--disp);font-weight:700;font-size:13px;letter-spacing:.12em;text-transform:uppercase;color:var(--ink-soft)}
+h2{font-family:var(--disp);font-weight:700;font-size:26px;line-height:1.3;margin-bottom:16px}
+h3{font-family:var(--disp);font-weight:700;font-size:19px;margin:28px 0 10px}
+p{margin:0 0 16px;color:var(--ink)}
+ul,ol{margin:0 0 16px 22px}
+li{margin-bottom:8px}
+code{font-family:var(--mono);font-size:.9em;background:var(--code-bg);border-radius:4px;padding:1px 6px}
+
+/* ---------- §1 一句话心智模型 ---------- */
+.oneliner{background:var(--card);border:1px solid var(--accent);border-left:5px solid var(--accent);
+  border-radius:10px;padding:20px 24px;margin:0 0 20px;font-size:18px;line-height:1.75;font-weight:500}
+
+/* ---------- 表格 ---------- */
+.tbl-scroll{overflow-x:auto;margin:20px 0}
+table{border-collapse:collapse;width:100%;font-size:14.5px;background:var(--card);border:1px solid var(--line);border-radius:8px}
+th,td{text-align:left;padding:10px 14px;border-bottom:1px solid var(--line);vertical-align:top}
+th{font-family:var(--disp);font-weight:700;font-size:13px;letter-spacing:.04em;background:var(--tool-bg)}
+tbody tr:last-child td{border-bottom:none}
+.sig-tbl td:first-child{width:52%}
+
+/* ---------- §2 分流条件 ---------- */
+.routing{border:1px dashed var(--warn);border-left:5px solid var(--warn);border-radius:10px;
+  background:var(--warn-soft);margin:22px 0;padding:16px 20px 4px}
+.routing .rt-head{font-family:var(--disp);font-weight:700;font-size:13px;letter-spacing:.1em;
+  text-transform:uppercase;color:var(--warn);margin-bottom:8px}
+.routing p{font-size:14.5px}
+
+/* ---------- §3 模板代码 ---------- */
+.tpl{background:var(--card);border:1px solid var(--line);border-radius:10px;margin:24px 0;overflow:hidden}
+.tpl-head{display:flex;align-items:baseline;gap:10px;flex-wrap:wrap;background:var(--head-bg);color:var(--head-fg);
+  padding:10px 18px;font-family:var(--disp);font-weight:700;font-size:13px;letter-spacing:.06em}
+.tpl-head .note{font-family:var(--mono);font-weight:400;font-size:12px;color:var(--ink-soft);letter-spacing:0}
+pre{margin:0;padding:16px 18px;overflow-x:auto;background:var(--code-bg);font-family:var(--mono);
+  font-size:13.5px;line-height:1.7;tab-size:4}
+pre code{background:none;padding:0;font-size:inherit}
+pre .cm{color:var(--ink-soft)}
+pre .cm.slot{color:var(--warn)}
+pre .cm.bone{color:var(--accent)}
+.tpl-foot{padding:12px 18px;border-top:1px solid var(--line);font-size:14.5px}
+.tpl-foot b{color:var(--accent)}
+.legend{display:flex;gap:18px;flex-wrap:wrap;font-family:var(--mono);font-size:12.5px;color:var(--ink-soft);margin:0 0 6px}
+.legend i{font-style:normal}
+.legend .bone{color:var(--accent)}
+.legend .slot{color:var(--warn)}
+
+/* ---------- §4 题目分层 ---------- */
+.tier{margin:24px 0 0}
+.tier-head{display:flex;align-items:baseline;gap:10px;flex-wrap:wrap;border-bottom:1px solid var(--line);padding-bottom:8px}
+.tier-head .t{font-family:var(--disp);font-weight:700;font-size:15px}
+.tier-head .d{font-size:13px;color:var(--ink-soft)}
+.tier-head .c{margin-left:auto;font-family:var(--mono);font-size:12px;color:var(--ink-soft)}
+ul.plist{list-style:none;margin:0}
+ul.plist li{margin:0;border-bottom:1px solid var(--line);padding:12px 2px}
+ul.plist li:last-child{border-bottom:none}
+.p-title{font-weight:500}
+.p-title a{text-decoration:none}
+.p-title a:hover{text-decoration:underline}
+.p-note{font-size:14px;color:var(--ink-soft);margin-top:4px}
+.badge{font-family:var(--mono);font-size:11px;border-radius:20px;padding:1px 8px;margin-left:6px;vertical-align:1px;white-space:nowrap}
+.badge.lock{background:var(--warn-soft);color:var(--warn);border:1px solid var(--warn)}
+.badge.star{background:var(--tool-bg);color:var(--ink-soft);border:1px solid var(--mute)}
+.badge.diff{background:var(--tool-bg);color:var(--ink-soft);border:1px solid var(--line)}
+
+/* ---------- §5 翻车点 ---------- */
+ol.pits{list-style:none;margin:0;counter-reset:pit}
+ol.pits li{counter-increment:pit;position:relative;padding:12px 0 12px 40px;border-bottom:1px solid var(--line)}
+ol.pits li:last-child{border-bottom:none}
+ol.pits li::before{content:counter(pit);position:absolute;left:0;top:12px;width:26px;height:26px;border-radius:50%;
+  background:var(--warn-soft);color:var(--warn);border:1px solid var(--warn);
+  font-family:var(--mono);font-size:13px;display:flex;align-items:center;justify-content:center}
+ol.pits .pt{font-weight:700}
+
+/* ---------- quiz：30 秒识别模式 ---------- */
+.quiz{margin-top:20px}
+.q{background:var(--card);border:1px solid var(--line);border-radius:10px;margin:14px 0;padding:16px 20px 6px}
+.qtype{display:inline-block;font-family:var(--mono);font-size:11.5px;background:var(--accent-soft);color:var(--ink);
+  border-radius:20px;padding:1px 10px;margin-right:8px;vertical-align:1px}
+.qprompt{margin-bottom:12px}
+.opts{display:flex;flex-wrap:wrap;gap:8px;margin-bottom:12px}
+.opt{font-family:var(--body);font-size:13.5px;background:var(--paper);color:var(--ink);border:1px solid var(--line);
+  border-radius:20px;padding:5px 14px;cursor:pointer}
+.opt:hover{border-color:var(--accent)}
+.opt:focus-visible{outline:2px solid var(--accent);outline-offset:2px}
+.opt.right{border-color:var(--ok);color:var(--ok);font-weight:700}
+.opt.wrong{border-color:var(--warn);color:var(--warn);text-decoration:line-through}
+.q details{border-top:1px dashed var(--line);margin:0 -20px;padding:0}
+.q summary{cursor:pointer;padding:12px 20px;font-family:var(--mono);font-size:12.5px;color:var(--ink-soft);list-style:none}
+.q summary::-webkit-details-marker{display:none}
+.q summary::before{content:'▸ ';color:var(--accent)}
+.q details[open] summary::before{content:'▾ '}
+.answer{padding:4px 20px 12px;font-size:14.5px;background:var(--answer-bg)}
+.quiz-ctl{background:none;border:1px solid var(--line);border-radius:20px;color:var(--ink-soft);cursor:pointer;
+  font-family:var(--mono);font-size:12px;padding:4px 14px;margin-bottom:4px}
+.quiz-ctl:hover{border-color:var(--accent);color:var(--accent)}
+.quiz-note{font-size:13.5px;color:var(--ink-soft);border-left:3px solid var(--line);padding-left:14px;margin-top:16px}
+
+.next{margin-top:72px;padding-top:24px;border-top:2px solid var(--ink);display:flex;justify-content:space-between;flex-wrap:wrap;gap:10px;font-family:var(--disp);font-weight:500;font-size:14px}
+.next a{text-decoration:none}
+.next a:hover{text-decoration:underline}
+.next .disabled{color:var(--ink-soft)}
+
+/* ============================================================
+   目录页 / 速查页 / 错题页 专用
+   ============================================================ */
+.book-head{padding:52px 0 36px;border-bottom:2px solid var(--ink)}
+.book-head .lede{font-size:17px;color:var(--ink-soft);max-width:640px;margin-top:18px}
+.part{margin-top:52px}
+.part-head{display:flex;align-items:baseline;gap:12px;flex-wrap:wrap;border-bottom:1px solid var(--line);padding-bottom:10px;margin-bottom:6px}
+.part-head .no{font-family:var(--disp);font-weight:700;font-size:13px;letter-spacing:.12em;text-transform:uppercase;color:var(--accent)}
+.part-head h2{font-size:22px;margin:0}
+.part-head .tag{font-family:var(--mono);font-size:12.5px;color:var(--ink-soft);margin-left:auto}
+.toc{list-style:none;margin:0}
+.toc li{margin:0;border-bottom:1px solid var(--line)}
+.toc li:last-child{border-bottom:none}
+.toc a{display:flex;gap:14px;align-items:baseline;flex-wrap:wrap;padding:13px 4px;text-decoration:none;color:var(--ink)}
+.toc a:hover{background:var(--card)}
+.toc .n{font-family:var(--mono);font-size:13px;color:var(--accent);min-width:34px}
+.toc .t{font-weight:500}
+.toc .d{font-size:13.5px;color:var(--ink-soft);flex:1 1 260px}
+
+.callout{background:var(--card);border:1px solid var(--line);border-left:4px solid var(--accent);border-radius:8px;padding:16px 20px 4px;margin:24px 0}
+.callout.no{border-left-color:var(--warn)}
+.stats{display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:12px;margin:20px 0}
+.stat{border:1px solid var(--line);border-radius:8px;padding:12px 14px;background:var(--card)}
+.stat .n{font-family:var(--disp);font-weight:700;font-size:24px;color:var(--accent)}
+.stat .l{font-size:12.5px;color:var(--ink-soft);line-height:1.5;margin-top:2px}
+
+/* 决策树 */
+.tree{font-family:var(--mono);font-size:13.5px;line-height:1.9;background:var(--card);border:1px solid var(--line);
+  border-radius:10px;padding:18px 20px;margin:20px 0;overflow-x:auto}
+.tree .node{color:var(--ink)}
+.tree .cond{color:var(--warn)}
+.tree .leaf{color:var(--accent);text-decoration:none;font-weight:500}
+.tree .leaf:hover{text-decoration:underline}
+.tree .cue{color:var(--ink-soft)}
+.idx-tbl td:first-child{width:46%}
+.idx-tbl .to{white-space:nowrap}
+
+/* 错题登记 */
+.log-form{display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:10px;margin:18px 0 8px;align-items:end}
+.log-form label{display:block;font-family:var(--mono);font-size:12px;color:var(--ink-soft);margin-bottom:4px}
+.log-form input,.log-form select{width:100%;font-family:var(--body);font-size:14px;padding:8px 10px;border-radius:6px;
+  border:1px solid var(--line);background:var(--card);color:var(--ink)}
+.btn{font-family:var(--body);font-size:14px;padding:9px 18px;border-radius:20px;border:1px solid var(--accent);
+  background:var(--accent);color:var(--on-fill);cursor:pointer}
+.btn:hover{filter:brightness(1.08)}
+.btn.ghost{background:none;color:var(--ink-soft);border-color:var(--line)}
+.btn.ghost:hover{border-color:var(--warn);color:var(--warn)}
+.log-empty{color:var(--ink-soft);font-size:14px;padding:14px 0}
+#log-tbl th{white-space:nowrap}
+#log-tbl td:last-child{white-space:nowrap}
+.blank-rows td{height:34px;border-bottom:1px solid var(--line)}
+
+/* ---------- 附录 A · Python 刷题急救包 ---------- */
+pre .eid{display:inline-block;min-width:30px;color:var(--ink-soft);user-select:none}
+pre .eid:target{color:var(--warn);font-weight:700}
+ol.pits pre{margin:10px 0 4px;border:1px solid var(--line);border-radius:8px}
+.q pre{margin:0 0 12px;border:1px solid var(--line);border-radius:8px}
+.rehab-refs a{text-decoration:none}
+.rehab-refs a:hover code{border:1px solid var(--accent)}
+.badge.src{background:var(--tool-bg);color:var(--ink-soft);border:1px solid var(--line)}
+.plist details{border-top:1px dashed var(--line);margin-top:10px}
+.plist summary{cursor:pointer;padding:8px 0 2px;font-family:var(--mono);font-size:12.5px;color:var(--ink-soft);list-style:none}
+.plist summary::-webkit-details-marker{display:none}
+.plist summary::before{content:'▸ ';color:var(--accent)}
+.plist details[open] summary::before{content:'▾ '}
+.plist .answer{padding:6px 12px 10px;border-radius:6px}
+
+/* ============================================================
+   本书专属组件
+   ============================================================ */
+
+/* ---------- 实现状态徽章 ---------- */
+/* 取值只有三种，见 SKELETON §6。色义：蓝=在跑，橙=半截，灰=只有文档。 */
+.status{display:inline-flex;align-items:center;gap:6px;font-family:var(--mono);font-size:11.5px;
+  border-radius:20px;padding:2px 11px;border:1px solid;white-space:nowrap}
+.status::before{content:'';width:7px;height:7px;border-radius:50%;background:currentColor;flex:none}
+.status.shipped{color:var(--accent);border-color:var(--accent);background:var(--accent-soft)}
+.status.partial{color:var(--warn);border-color:var(--warn);background:var(--warn-soft)}
+.status.paper{color:var(--ink-soft);border-color:var(--mute);background:var(--tool-bg)}
+
+/* ---------- 引用：path:line@SHA ---------- */
+/* 每条 §2 的断言都挂一个。等宽、不换行、hover 才显下划线，避免正文变成蓝色海洋。 */
+a.src{font-family:var(--mono);font-size:12px;color:var(--ink-soft);text-decoration:none;
+  border-bottom:1px dotted var(--mute);white-space:nowrap}
+a.src:hover{color:var(--accent);border-bottom-color:var(--accent)}
+a.src::before{content:'↪ '}
+.srcline{font-family:var(--mono);font-size:12px;color:var(--ink-soft);margin:-8px 0 18px}
+
+/* ---------- 代码摘录 ---------- */
+/* 复用 .tpl 骨架，但头部左侧放文件路径、右侧放行号区间 */
+.tpl-head .path{font-family:var(--mono);font-weight:400;letter-spacing:0;font-size:12.5px}
+.tpl-head .lines{margin-left:auto;font-family:var(--mono);font-weight:400;font-size:12px;color:var(--ink-soft);letter-spacing:0}
+/* 代码块只有两种，标签必须显式区分——本书的前提是「我们读代码」，
+   把改写过的块标成「节选」是这本书唯一不能犯的错。 */
+.tpl-head .lines.literal::before{content:'≡ ';color:var(--accent)}
+.tpl-head .lines.rewritten{color:var(--warn)}
+.tpl-head .lines.rewritten::before{content:'✎ '}
+pre .hl{background:var(--accent-soft);display:inline-block;width:100%}
+pre .om{color:var(--ink-soft);font-style:italic}
+
+/* ---------- 漂移条目 ---------- */
+.drift{border:1px solid var(--warn);border-left:5px solid var(--warn);border-radius:10px;
+  background:var(--card);margin:22px 0;padding:16px 20px 6px}
+.drift .dh{font-family:var(--disp);font-weight:700;font-size:13px;letter-spacing:.1em;
+  text-transform:uppercase;color:var(--warn);margin-bottom:10px}
+.drift dl{margin:0 0 10px;font-size:14.5px}
+.drift dt{font-family:var(--mono);font-size:12px;color:var(--ink-soft);margin-top:8px}
+.drift dd{margin:2px 0 0}
+
+/* ---------- §5 拿走什么 ---------- */
+ul.takeaway{list-style:none;margin:0}
+ul.takeaway li{position:relative;padding:12px 0 12px 30px;border-bottom:1px solid var(--line)}
+ul.takeaway li:last-child{border-bottom:none}
+ul.takeaway li::before{content:'→';position:absolute;left:2px;top:12px;color:var(--accent);
+  font-family:var(--mono);font-weight:700}
+ul.takeaway .cond{display:block;font-size:13.5px;color:var(--ink-soft);margin-top:4px}
+ul.takeaway .cond b{color:var(--warn);font-weight:500}
+
+/* ---------- 溯源索引表 ---------- */
+.src-tbl{font-size:13.5px;table-layout:fixed;width:100%;min-width:640px}
+.src-tbl td.ln{width:64px;white-space:nowrap;font-family:var(--mono);font-size:12px}
+.src-tbl td.ln a{text-decoration:none}
+.src-tbl td.ln a:hover{text-decoration:underline}
+.src-tbl td.chs{width:96px}
+.src-tbl .snip{background:none;padding:0;font-size:12px;color:var(--ink-soft);
+  display:block;overflow-x:auto;white-space:pre}
+.srcfile{background:var(--tool-bg);font-family:var(--mono);font-size:12.5px;
+  border-top:2px solid var(--line);padding-top:12px}
+.srcfile .c{color:var(--ink-soft);font-size:11.5px;margin-left:8px}
+.chs a{font-family:var(--mono);font-size:12px;text-decoration:none;margin-right:5px}
+.chs a:hover{text-decoration:underline}
+
+/* ---------- 漂移页 ---------- */
+.drift h3{font-size:17px;margin:0 0 12px}
+
+/* ---------- 页脚版本锚 ---------- */
+.anchor-foot{margin-top:56px;padding-top:18px;border-top:1px solid var(--line);
+  font-family:var(--mono);font-size:12px;color:var(--ink-soft);line-height:1.7}
+.anchor-foot code{font-size:11.5px}
+
+@media (max-width:560px){
+  .bars{max-width:100%}
+  .stats{grid-template-columns:1fr 1fr}
+  .part-head .tag{margin-left:0;flex-basis:100%}
+  .tpl-head .lines{margin-left:0;flex-basis:100%}
+}
+@media print{
+  /* 打印一律浅色。本书 :root 是深色，且 html[data-theme="dark|light"] 的特异度为 (0,1,1)，
+     高于单独的 :root (0,1,0)。三个选择器缺一不可：
+       :root                     → 覆盖「从未手动切换」的默认深色状态
+       html[data-theme="dark"]   → 覆盖手动切深色（特异度持平 + 源码靠后而获胜）
+       html[data-theme="light"]  → 已是浅色，写上是为了让三种状态走同一组值
+     漏掉第二条时，手动切到深色的读者打印出来会是黑底。 */
+  :root, html[data-theme="dark"], html[data-theme="light"]{
+    --paper:#fff;--ink:#1B2733;--ink-soft:#4A5A68;--accent:#2F6DE0;--accent-soft:#DCE7FB;
+    --warn:#E0632F;--warn-soft:#FBE6DA;--mute:#C6CDD2;--line:#D8DDDE;--card:#FFFFFF;
+    --code-bg:#EDF0EE;--tool-bg:#F1F3F0;--answer-bg:#FBFCFA;--head-bg:#1B2733;--head-fg:#fff;
+    --ok:#2C7A54;--on-fill:#fff;
+  }
+  .theme-toggle,.quiz-ctl,.crumb,.opts,.log-form,.log-actions,#log-tbl td:last-child,
+  #log-tbl th:last-child,#log-empty{display:none}
+  /* 空白行在屏幕上被 JS 隐藏了（已有记录时），打印时一律放回来供手写补充 */
+  #log-blank[hidden]{display:table-row-group}
+  body{background:#fff;font-size:12.5px}
+  .q,.tpl,.tier,.routing,.tree,.drift,.oneliner{page-break-inside:avoid}
+  ul.takeaway li,.stat,.srcfile{page-break-inside:avoid}
+  /* 打印稿离开了超链接，引用必须自带可抄写的定位信息 */
+  a.src{border-bottom:none;color:#4A5A68}
+  a.src::before{content:'['}
+  a.src::after{content:']'}
+  /* 状态徽章在纸上没有颜色语义，改为方括号文字 */
+  .status{border-width:1px;padding:1px 6px}
+  .status::before{display:none}
+  .status.shipped{color:#2F6DE0;background:none}
+  .status.partial{color:#E0632F;background:none}
+  .status.paper{color:#4A5A68;background:none}
+  /* 「原文 / 改写自」是本书唯一不可丢的标签，必须在纸上也可见 */
+  .tpl-head .lines.literal::before{content:'= '}
+  .tpl-head .lines.rewritten::before{content:'* '}
+  .tpl-head .lines{color:#1B2733}
+  /* 溯源索引在屏幕上靠横向滚动，纸上没有滚动条 */
+  .src-tbl{min-width:0;font-size:10.5px;table-layout:auto}
+  .src-tbl .snip{white-space:pre-wrap;word-break:break-all;font-size:9.5px}
+  .tbl-scroll{overflow-x:visible}
+  pre{white-space:pre-wrap;word-break:break-word}
+  /* 关闭状态的 <details> 由 UA 在内容槽层面隐藏，只设 display 无法可靠覆盖，
+     真正展开由 quiz.js 的 beforeprint 钩子负责。 */
+  .q summary{display:none}
+  .next{display:none}
+}
+@media (prefers-reduced-motion:no-preference){
+  /* 条带是横向的，所以按 scaleX 展开（母题改版后如果沿用 scaleY 会看不出动画） */
+  .bars span{animation:grow .5s ease both;transform-origin:left}
+  .bars span:nth-child(2){animation-delay:.07s}
+  .bars span:nth-child(3){animation-delay:.14s}
+  .bars span:nth-child(4){animation-delay:.21s}
+  @keyframes grow{from{transform:scaleX(.05);opacity:0}to{transform:scaleX(1);opacity:1}}
+}

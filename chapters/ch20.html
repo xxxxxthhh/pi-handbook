@@ -1,0 +1,171 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>20 借鉴清单与失效条件 · Pi 源码解读手册</title>
+<meta name="description" content="可直接抄的 / 抄了会疼的 / 赌注未结算的；每条附「在什么条件下这个取舍失效」">
+<link rel="icon" type="image/svg+xml" href="../assets/favicon.svg">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@500;700&family=Noto+Sans+SC:wght@400;500;700&family=IBM+Plex+Mono:wght@400;500&display=swap" rel="stylesheet" media="print" onload="this.media='all'">
+<noscript><link href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@500;700&family=Noto+Sans+SC:wght@400;500;700&family=IBM+Plex+Mono:wght@400;500&display=swap" rel="stylesheet"></noscript>
+<link rel="stylesheet" href="../assets/handbook.css">
+<script src="../assets/theme.js"></script>
+</head>
+<body>
+<button class="theme-toggle" type="button" aria-label="切换深色/浅色模式" title="切换深色/浅色模式">
+  <span class="sun" aria-hidden="true">☀️</span><span class="moon" aria-hidden="true">🌙</span>
+</button>
+<div class="wrap">
+<nav class="crumb"><a href="../index.html">← 目录</a> · <a href="../sources.html">溯源索引</a> · <a href="../drift.html">漂移记录</a></nav>
+
+<header class="ch">
+  <div class="bars" aria-hidden="true"><span class="l1"></span><span class="l2"></span><span class="l3 w"></span><span class="l4 f"></span></div>
+  <div class="kicker">Part VI · Verdict</div>
+  <h1>20 借鉴清单与失效条件
+    <span class="zh">哪些能直接抄，哪些抄了会疼，哪些赌注还没结算</span>
+  </h1>
+  <div class="meta">
+    <span>覆盖 <b>ch01–ch19</b></span>
+    <span>本章为<b>判断</b>，非事实陈述</span>
+  </div>
+</header>
+
+<section id="s1">
+  <div class="sec-tag"><span class="cell"></span><span class="lab">§1 Mental Model 一句话心智模型</span></div>
+  <h2>先说本章的性质</h2>
+
+<div class="oneliner"><b>前 19 章尽量只说代码里能证明的事。本章不同——它是判断。每条结论都标了「在什么条件下失效」，因为脱离条件的建议在工程里没有意义。</b></div>
+
+<p>读完全书，pi 的设计哲学可以压成一句：<b>把防御预算花在能真正守住的关口上，守不住的地方就明说守不住。</b></p>
+
+<p>这条原则解释了它几乎所有看似矛盾的决定：</p>
+
+<div class="tbl-scroll"><table><thead><tr><th>守得住 → 守到底</th><th>守不住 → 明确放弃</th></tr></thead><tbody>
+<tr><td>依赖引入（精确锁版本、2 天延迟、脚本白名单）</td><td>运行时权限（不做沙箱）</td></tr>
+<tr><td>切点合法性（永不切在 toolResult 上）</td><td>摘要的语义可靠性（靠一段英文前缀）</td></tr>
+<tr><td>存储契约（三后端一套一致性测试）</td><td>崩溃恢复（v3 会话根本没有 record）</td></tr>
+<tr><td>终端渲染（自研 3.2 万行）</td><td>prompt injection（文档直说防不住）</td></tr>
+</tbody></table></div>
+
+<p>它的一致性在于：<b>从不在守不住的地方摆一个看起来像防线的东西。</b>这是本书作者认为 pi 最值得学的一点，也是最容易被误读成「不负责任」的一点。</p>
+
+</section>
+
+<section id="s2">
+  <div class="sec-tag"><span class="cell"></span><span class="lab">§2 Copy 可以直接抄的</span></div>
+  <h2>九条，按可抄性排序</h2>
+
+<ul class="takeaway">
+  <li><b>生命周期脚本白名单用 <code>包@精确版本 → 理由</code> 的 Map。</b>数据结构强制写理由，升级自动作废旧审查结论。pi 的白名单只有两条，各带一句说明。（<a href="ch16.html">16</a>）
+    <span class="cond">几乎无条件适用于任何允许安装脚本的包管理器。<b>成本：一个文件、二十行。</b></span></li>
+
+  <li><b>贡献判据定成「你能否解释你的代码」，而不是「是否用了 AI」。</b>后者不可验证也不该验证；前者在 review 中天然可测。（<a href="ch18.html">18</a>）
+    <span class="cond">适用于所有接受外部贡献的项目。<b>成本：改一句 CONTRIBUTING.md。</b></span></li>
+
+  <li><b>把 <code>stopReason === "length"</code> 当整批 tool call 的毒丸。</b>流式参数的容错解析会产出「能解析、能过校验、但内容不完整」的调用——这是最难查的一类 bug。（<a href="ch03.html">03</a>）
+    <span class="cond">条件：你用流式 tool call 且做了 JSON 容错。<b>参数只在完整消息上一次性解析的实现不存在这个坑。</b></span></li>
+
+  <li><b>压缩先确定「哪些位置切了不违反协议」，再谈保留多少 token。</b>toolResult 必须紧跟 tool call 是全 provider 通用的硬约束；token 预算只是软目标。（<a href="ch06.html">06</a>）
+    <span class="cond">适用于所有做上下文裁剪的 agent。<b>顺序反过来会产出被 provider 拒绝的请求。</b></span></li>
+
+  <li><b>多后端存储：先写一套一致性测试，再写第二个实现。</b>否则「契约」只是第一个实现的行为。pi 的 memory / JSONL / SQLite 三家共用一份 <code>createSessionBackendConformance</code>。（<a href="ch07.html">07</a>）
+    <span class="cond">条件：存储后端可插拔。<b>单后端时它就是普通单测，仍然有价值。</b></span></li>
+
+  <li><b>规则文件写成「不要 X + 因为 Y + 改为做 Z」三段式。</b>只有「不要 X」的规则会在边缘情况被模型自行放宽。（<a href="ch17.html">17</a>）
+    <span class="cond">适用于所有 agent 规则文件。<b>对人类同事反而该用抽象原则——具体清单显得不信任。</b></span></li>
+
+  <li><b>大重构时让未完成接口抛专有异常，并把「没有任何未完成方法报告看似成功」写成验收测试。</b>pi 的 F0 工作包就干了这一件事，交付物是 22 个 <code>HarnessNotImplemented</code>。（<a href="ch08.html">08</a>）
+    <span class="cond">条件：多人/多 agent 并行开发同一个新接口。<b>单人顺序开发时空实现危害小得多。</b></span></li>
+
+  <li><b>文档里主动告诉读者「你这类用户不该用这个特性」。</b>1578 行的 RPC 文档在第 5 行劝退 Node 用户。（<a href="ch14.html">14</a>）
+    <span class="cond">条件：同一能力有多条接入路径。<b>成本为零，收益是所有人的时间。</b></span></li>
+
+  <li><b>快照是权威，事件是瞬态提示——写进协议规范。</b>让事件通道可以不可靠，代价只是重连重传快照。（<a href="ch14.html">14</a>）
+    <span class="cond">条件：高频事件 + 可能断线的客户端。<b>低频事件系统可以让客户端归约，省掉快照。</b></span></li>
+</ul>
+
+</section>
+
+<section id="s3">
+  <div class="sec-tag"><span class="cell"></span><span class="lab">§3 Careful 抄了会疼的</span></div>
+  <h2>五条：pi 做对了，但换个环境就不成立</h2>
+
+<ul class="takeaway">
+  <li><b>「不做权限系统」。</b>pi 的论证在<em>它的用户</em>身上成立——能配 micro-VM 的开发者确实不需要进程内假边界。但这个论证有个漏洞：它用「防不住攻击者」的理由，一并否掉了「防模型犯错」的护栏，而后者是<b>高频事件</b>。（<a href="ch15.html">15</a>）
+    <span class="cond"><b>失效条件</b>：用户不做容器化（默认情况）、需要集中审计的组织、或非专业开发者。此时你得到的不是「诚实的无边界」，是「实际的无防护」。</span></li>
+
+  <li><b>贡献者门禁默认自动关闭。</b>它成立的前提是维护者真的每天审阅被关队列。（<a href="ch18.html">18</a>）
+    <span class="cond"><b>失效条件</b>：维护者已倦怠。此时同一套机制退化成自动拒绝机器人，而外部无从分辨这两者。<b>先问自己能不能兑现每日审阅，再决定抄不抄。</b></span></li>
+
+  <li><b>共享工作区 + 纪律，而不是 worktree 隔离。</b>pi 用 <code>AGENTS.md</code> 的命令级黑名单替代物理隔离，换来共享构建产物的效率。（<a href="ch17.html">17</a>）
+    <span class="cond"><b>失效条件</b>：会话很长。规则文件会被压缩掉（<a href="ch06.html">06</a>：没有 pin 机制），<b>纪律在长会话末期最松，而那恰恰是改动最多的时候</b>。这个失效是结构性的，不是执行问题。</span></li>
+
+  <li><b>自研终端 UI 库。</b>3.2 万行 + 两个平台原生模块 + 四份终端兼容文档。（<a href="ch11.html">11</a>）
+    <span class="cond"><b>失效条件</b>：终端体验不是你的核心产品。判据很简单——<b>「重绘模型」是不是你要解决的主要问题？</b>不是就用现成方案。</span></li>
+
+  <li><b>把设计文档当任务队列。</b>41 个工作包 + git 当分布式锁，零基础设施。（<a href="ch19.html">19</a>）
+    <span class="cond"><b>失效条件</b>：没有单一权威。这套协议的争议解决机制是「去 Discord 找 Mario」——<b>具名到一个人</b>。也失效于 PR 队列以天计的项目：认领提交排队期间，别人可能已经落地了冲突的认领。</span></li>
+</ul>
+
+</section>
+
+<section id="s4">
+  <div class="sec-tag"><span class="cell"></span><span class="lab">§4 Open 赌注未结算的</span></div>
+  <h2>四件到快照时还没有答案的事</h2>
+
+<p>这一节不是批评。它列的是<b>已经下注、但结果尚未揭晓</b>的决定——如果你在评估是否依赖 pi，这四条是真正的风险点。</p>
+
+<ul>
+  <li><b>harness-v2 会不会完工。</b>41 个包完成 11 个，30 个未动，而且没有任何机制保证它们会被完成。存储底座已经落地（<a href="ch07.html">07</a>），执行器是空壳（<a href="ch08.html">08</a>）。<b>把 lanes / durable runs 当成 pi 的能力来做技术选型，是拿别人的路线图当自己的依赖。</b></li>
+
+  <li><b>两处「同名双份实现」会不会收敛。</b>compaction（<a href="ch06.html">06</a>，漂移 d3）与工具（<a href="ch02.html">02</a>）各有两份，从两个已发布的 npm 包导出同名函数。这是迁移中间态，但<b>对库使用者是当下的事实，且文档没有任何提示</b>。收敛需要 <code>coding-agent</code> 迁到新 harness——而设计文档明确说这不在本次计划范围内。</li>
+
+  <li><b>「让 agent 解释自己」这条路径的实际效果。</b>README 建议读者直接问 agent，skills 文档说「pi 可以给你造 skill」。<a href="ch13.html">第 13 章</a>验证了它的<em>准备工作</em>是实的（AGENTS.md、prompt 模板、机读的工作包协议），但<b>路径本身的效果无法从仓库验证</b>——它取决于模型能力和提问方式。</li>
+
+  <li><b>贡献者门禁的长期效应。</b>240 个已批准账号说明门在开。但这套机制运行时间不长，<b>它对「路过发现真 bug 的资深工程师」的净影响还看不出来</b>——这类人被自动关闭后大概率不会回来，而他们的流失是静默的、不可测量的。</li>
+</ul>
+
+<h2>本书自身的边界</h2>
+
+<p>为了让读者能校准信任：</p>
+
+<ul>
+  <li><b>本书读的是代码和文档，没有运行过 pi 做端到端验证。</b>所有「已发布」判定基于调用链追踪（构造点 → 循环），不是行为观察。</li>
+  <li><b>没有审计 <code>packages/tui</code> 的差分渲染正确性、也没有审计 <code>packages/ai</code> 各 provider 适配的正确性。</b>这两处占了全仓 36% 的代码，本书只描述了它们的设计意图。</li>
+  <li><b>漂移记录只有 3 条</b>，来自写作过程中的顺手发现，不是系统性扫描的结果。一次针对 32945 行 markdown 的完整核对必然会找出更多。</li>
+  <li><b>本章是判断，不是事实。</b>§2/§3/§4 的分类反映的是本书作者的取舍偏好；同样的证据，别人可以得出不同的排序。</li>
+</ul>
+
+</section>
+
+<section id="s5">
+  <div class="sec-tag"><span class="cell"></span><span class="lab">§5 Takeaway 如果只记一件事</span></div>
+
+<div class="oneliner"><b>读一个活跃重写期的开源项目时，先分清「文档描述的系统」和「运行的系统」——方法很机械：找到生产入口的构造点，从那里往下读。</b></div>
+
+<p>本书从头到尾只做了一件方法上的事：<b>不相信文档，去找那个 <code>new Agent(</code>。</b></p>
+
+<p>结果是一个 3437 行的设计文档、一个 22 个方法抛错的类、一个只被自己测试引用的接线文件，和一条从 <code>sdk.ts:294</code> 出发的、真实在跑的调用链。这四样东西的关系，是任何一份 README 都不会告诉你的。</p>
+
+<p>如果你要评估、依赖、或借鉴一个处于类似阶段的项目，这个方法比读一百页文档更快。</p>
+
+<p class="quiz-note">全书的行号引用可在 <a href="../sources.html">溯源索引</a> 一次性核对；文档与代码不一致之处记在 <a href="../drift.html">漂移记录</a>。</p>
+
+</section>
+
+<div class="next">
+  <a href="ch19.html">← 19 spec-driven 开发</a>
+  <a href="../index.html">回到目录</a>
+</div>
+
+<div class="anchor-foot">
+基于 <a href="https://github.com/earendil-works/pi/tree/ac4ac9eaf69f2b01ca3af984a5c48f3b99b84278">earendil-works/pi @ <code>ac4ac9e</code></a>（2026-08-07 快照）。<br>
+<b>本章为判断而非事实陈述</b>；结论随上游演进失效的速度，快于前 19 章。
+</div>
+
+</div>
+<script src="../assets/quiz.js" defer></script>
+</body>
+</html>

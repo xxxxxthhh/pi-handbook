@@ -1,0 +1,228 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>05 上下文管道 · Pi 源码解读手册</title>
+<meta name="description" content="AgentMessage ↔ LLM Message 的两道闸：transformContext 与 convertToLlm">
+<link rel="icon" type="image/svg+xml" href="../assets/favicon.svg">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@500;700&family=Noto+Sans+SC:wght@400;500;700&family=IBM+Plex+Mono:wght@400;500&display=swap" rel="stylesheet" media="print" onload="this.media='all'">
+<noscript><link href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@500;700&family=Noto+Sans+SC:wght@400;500;700&family=IBM+Plex+Mono:wght@400;500&display=swap" rel="stylesheet"></noscript>
+<link rel="stylesheet" href="../assets/handbook.css">
+<script src="../assets/theme.js"></script>
+</head>
+<body>
+<button class="theme-toggle" type="button" aria-label="切换深色/浅色模式" title="切换深色/浅色模式">
+  <span class="sun" aria-hidden="true">☀️</span><span class="moon" aria-hidden="true">🌙</span>
+</button>
+<div class="wrap">
+<nav class="crumb"><a href="../index.html">← 目录</a> · <a href="../sources.html">溯源索引</a> · <a href="../drift.html">漂移记录</a></nav>
+
+<header class="ch">
+  <div class="bars" aria-hidden="true"><span class="l1"></span><span class="l2"></span><span class="l3"></span><span class="l4 f"></span></div>
+  <div class="kicker">Part II · Kernel — The Context Pipeline</div>
+  <h1>05 上下文管道
+    <span class="zh">模型看到的，和会话里存的，从来不是一回事</span>
+  </h1>
+  <div class="meta">
+    <span class="status shipped">已发布</span>
+    <span>两道闸 <b>transformContext / convertToLlm</b></span>
+    <span>自定义 role <b>4 种</b></span>
+  </div>
+</header>
+
+<section id="s1">
+  <div class="sec-tag"><span class="cell"></span><span class="lab">§1 Mental Model 一句话心智模型</span></div>
+  <h2>先记住这一句</h2>
+
+<div class="oneliner"><b>pi 的会话历史里有六种 role，LLM 只认三种。中间隔着两道闸：<code>transformContext</code> 改「有哪些消息」，<code>convertToLlm</code> 改「这些消息长什么样」。会话是真相，喂给模型的是它的一个投影。</b></div>
+
+<p>这个分层解决的问题很具体：一次 <code>!ls</code> 的 bash 执行、一段压缩摘要、一条扩展插入的通知，在 UI 上要各自渲染成不同的东西，在会话文件里要保留各自的结构以便日后回放，但对 LLM 来说它们只能是 <code>user</code>/<code>assistant</code>/<code>toolResult</code> 三选一。</p>
+
+<p>推论有两条，都很容易踩：</p>
+
+<ul>
+  <li><b>模型从来没见过「压缩摘要」这个概念。</b>摘要抵达模型时是一条普通 <code>user</code> 消息，靠一段固定的英文前缀说明自己是什么。</li>
+  <li><b>会话文件里的消息数 ≠ 请求里的消息数。</b>有被过滤掉的（<code>!!</code> 前缀的 bash），有被合并改写的。调试「模型为什么没看到 X」时，要看的是转换之后的结果。</li>
+</ul>
+
+</section>
+
+<section id="s2">
+  <div class="sec-tag"><span class="cell"></span><span class="lab">§2 Evidence 代码实证</span></div>
+  <h2>两道闸的位置</h2>
+
+<p>循环在每次 LLM 调用前依次过这两道闸，顺序固定：先 <code>transformContext</code>（可选），再 <code>convertToLlm</code>（必需）。<a class="src" href="https://github.com/earendil-works/pi/blob/ac4ac9eaf69f2b01ca3af984a5c48f3b99b84278/packages/agent/src/agent-loop.ts#L290" data-expect="if (config.transformContext) {">agent-loop.ts:290</a> <a class="src" href="https://github.com/earendil-works/pi/blob/ac4ac9eaf69f2b01ca3af984a5c48f3b99b84278/packages/agent/src/agent-loop.ts#L295" data-expect="const llmMessages = await config.convertToLlm(messages);">agent-loop.ts:295</a></p>
+
+<div class="tpl">
+  <div class="tpl-head"><span class="path">packages/agent/src/agent-loop.ts</span><span class="lines literal">原文 L289–L302</span></div>
+  <pre><code>let messages = context.messages;
+if (config.transformContext) {
+    messages = await config.transformContext(messages, signal);
+}
+
+// Convert to LLM-compatible messages (AgentMessage[] → Message[])
+const llmMessages = await config.convertToLlm(messages);
+
+// Build LLM context
+const llmContext: Context = {
+    systemPrompt: context.systemPrompt,
+    messages: llmMessages,
+    tools: context.tools,
+};</code></pre>
+  <div class="tpl-foot">两闸都<b>不写回 <code>context.messages</code></b>——转换结果是一次性的，只用于本次请求。会话历史不受影响。</div>
+</div>
+
+<h2>闸一：transformContext 在 pi 里等于「扩展说了算」</h2>
+
+<p>coding-agent 传给这道闸的实现只有一件事——把消息交给扩展系统，别的什么都不做：<a class="src" href="https://github.com/earendil-works/pi/blob/ac4ac9eaf69f2b01ca3af984a5c48f3b99b84278/packages/coding-agent/src/core/sdk.ts#L350" data-expect="transformContext: async (messages) =&gt; {">sdk.ts:350–354</a></p>
+
+<div class="tpl">
+  <div class="tpl-head"><span class="path">packages/coding-agent/src/core/sdk.ts</span><span class="lines literal">原文 L350–L354</span></div>
+  <pre><code>transformContext: async (messages) =&gt; {
+    const runner = extensionRunnerRef.current;
+    if (!runner) return messages;
+    return runner.emitContext(messages);
+},</code></pre>
+  <div class="tpl-foot">没有扩展时是恒等函数。<b>pi 自身的裁剪 / 压缩不走这道闸</b>——压缩是把结果写进会话历史（见 <a href="ch06.html">第 06 章</a>），不是每次请求临时改写。</div>
+</div>
+
+<p>这个设计选择值得停一下：<code>transformContext</code> 是<b>每次 LLM 调用都跑一遍</b>的钩子，扩展在这里的任何操作都乘以 turn 数。它适合做「注入当前时间」「附上打开的文件列表」这类幂等的上下文补充，不适合做重计算。</p>
+
+<h2>闸二：convertToLlm 把四种自定义 role 全部压成 user</h2>
+
+<p>会话里有六种 role。三种原样透传，另外三种（外加 <code>custom</code>）一律变成 <code>user</code>：<a class="src" href="https://github.com/earendil-works/pi/blob/ac4ac9eaf69f2b01ca3af984a5c48f3b99b84278/packages/coding-agent/src/core/messages.ts#L148" data-expect="export function convertToLlm(messages: AgentMessage[]): Message[] {">messages.ts:148–195</a></p>
+
+<div class="tbl-scroll"><table><thead><tr><th>会话中的 role</th><th>模型看到的</th><th>怎么标识自己</th></tr></thead><tbody>
+<tr><td><code>user</code> / <code>assistant</code> / <code>toolResult</code></td><td>原样</td><td>—</td></tr>
+<tr><td><code>bashExecution</code>（用户敲的 <code>!cmd</code>）</td><td><code>user</code></td><td>序列化成命令 + 输出的文本</td></tr>
+<tr><td><code>custom</code>（扩展插入）</td><td><code>user</code></td><td>无标识，扩展自己负责写清楚</td></tr>
+<tr><td><code>branchSummary</code></td><td><code>user</code></td><td>英文前后缀包裹</td></tr>
+<tr><td><code>compactionSummary</code></td><td><code>user</code></td><td>英文前后缀包裹</td></tr>
+</tbody></table></div>
+
+<p>那两段前缀是纯文本常量，不是任何协议字段：<a class="src" href="https://github.com/earendil-works/pi/blob/ac4ac9eaf69f2b01ca3af984a5c48f3b99b84278/packages/coding-agent/src/core/messages.ts#L11" data-expect="export const COMPACTION_SUMMARY_PREFIX">messages.ts:11</a> <a class="src" href="https://github.com/earendil-works/pi/blob/ac4ac9eaf69f2b01ca3af984a5c48f3b99b84278/packages/coding-agent/src/core/messages.ts#L19" data-expect="export const BRANCH_SUMMARY_PREFIX">messages.ts:19</a></p>
+
+<div class="tpl">
+  <div class="tpl-head"><span class="path">packages/coding-agent/src/core/messages.ts</span><span class="lines literal">原文 L11 与 L19（并置）</span></div>
+  <pre><code>export const COMPACTION_SUMMARY_PREFIX = `The conversation history before this point was compacted into the following summary:
+export const BRANCH_SUMMARY_PREFIX = `The following is a summary of a branch that this conversation came back from:</code></pre>
+  <div class="tpl-foot">模型区分「摘要」和「用户真的说过的话」，全靠读懂这两句英文。<b>这是一个 prompt 层面的约定，不是结构保证。</b></div>
+</div>
+
+<h2>唯一会凭空消失的消息</h2>
+
+<p><code>bashExecution</code> 带 <code>excludeFromContext</code> 标志时直接返回 <code>undefined</code>，最后被 <code>filter</code> 掉。<a class="src" href="https://github.com/earendil-works/pi/blob/ac4ac9eaf69f2b01ca3af984a5c48f3b99b84278/packages/coding-agent/src/core/messages.ts#L154" data-expect="if (m.excludeFromContext) {">messages.ts:154–156</a> 这对应用户敲 <code>!!cmd</code>（双感叹号）：命令执行、输出显示在 UI 上、写进会话文件，但<b>不进模型上下文</b>。</p>
+
+<p>这是全书值得单独记住的一个 UX 设计：给用户一个「我自己看看，别让模型知道」的逃生口，同时会话文件仍然完整——回放和审计不丢信息。</p>
+
+<h2>穷尽性检查挡住了「忘了处理新 role」</h2>
+
+<p><code>switch</code> 的 default 分支里放了 <code>const _exhaustiveCheck: never = m;</code>。<a class="src" href="https://github.com/earendil-works/pi/blob/ac4ac9eaf69f2b01ca3af984a5c48f3b99b84278/packages/coding-agent/src/core/messages.ts#L190" data-expect="const _exhaustiveCheck: never = m;">messages.ts:190</a> 任何人通过声明合并给 <code>AgentMessage</code> 加了新 role 而没在这里处理，<b>类型检查会失败</b>，不会静默地把消息丢掉。</p>
+
+<p>对照 <a href="ch03.html">第 03 章</a>看：pi 在「循环控制流」上不给扩展任何余地，但在「消息种类」上开放了声明合并——代价用一个 <code>never</code> 兜住。</p>
+
+</section>
+
+<section id="s3">
+  <div class="sec-tag"><span class="cell"></span><span class="lab">§3 Design 设计动机与权衡</span></div>
+  <h2>为什么是两道闸而不是一道</h2>
+
+<p>合成一道也能跑。分开的价值在于职责稳定性：<code>convertToLlm</code> 是<b>类型驱动的、必须穷尽的、跟随 role 定义变化</b>；<code>transformContext</code> 是<b>策略驱动的、可选的、跟随部署环境变化</b>。前者错了是类型错误，后者错了是效果问题。</p>
+
+<p>体现在签名上：<code>convertToLlm</code> 在 <code>AgentLoopConfig</code> 里是必填，<code>transformContext</code> 是可选。<a class="src" href="https://github.com/earendil-works/pi/blob/ac4ac9eaf69f2b01ca3af984a5c48f3b99b84278/packages/agent/src/agent-loop.ts#L290" data-expect="if (config.transformContext) {">agent-loop.ts:290</a> 一个 agent 可以没有任何上下文策略，但不可能没有消息映射。</p>
+
+<h2>把摘要降级成普通 user 消息的代价</h2>
+
+<p>好处很实在：不依赖任何 provider 的特殊能力，换模型不用改；摘要能被 prompt cache 正常缓存；不需要在 <code>pi-ai</code> 层为「摘要」造一个跨 provider 的抽象。</p>
+
+<p>代价同样实在：<b>模型可能把摘要当成用户的话</b>。「The conversation history before this point was compacted…」是一句请求模型配合的英文，不是一道结构约束。非英语强势的模型、或被大量后续内容淹没时，这个约定的可靠性会下降，而且失败是静默的。</p>
+
+<p>仓库里<b>未见对这一取舍的公开论述</b>；从代码看不出有过 provider 原生机制（如 Anthropic 的 system 块分层）的尝试痕迹。</p>
+
+<h2>扩展能改上下文，但改不了「已经存了什么」</h2>
+
+<p>两道闸都不写回 <code>context.messages</code>。扩展可以让模型看不到某条消息，但那条消息仍在会话文件里；反过来扩展塞进去的东西，除非显式 <code>appendEntry</code>，否则不会留痕。</p>
+
+<p>这条边界让「会话文件是可信记录」这件事成立——审计一个 run 时看会话文件即可，不必重放所有扩展。代价是<b>「模型当时到底看到了什么」在会话文件里查不到</b>，要靠 telemetry（见 <a href="ch14.html">第 14 章</a>）。</p>
+
+</section>
+
+<section id="s4">
+  <div class="sec-tag"><span class="cell"></span><span class="lab">§4 Limits 边界与失效条件</span></div>
+
+<ul>
+  <li><b>会话文件不记录转换后的请求。</b>排查「模型为什么没看到 X」时，会话文件只能证明 X 存在过，不能证明 X 进过请求。两者之间隔着扩展的 <code>emitContext</code>。</li>
+  <li><b><code>transformContext</code> 每 turn 跑一次。</b>在一个 30 turn 的 run 里，一个做网络请求的上下文扩展就是 30 次网络请求。签名上看不出这个频率。</li>
+  <li><b>摘要前缀是英文硬编码。</b>与中文 / 多语言会话混排时，模型面对的是一段语言切换的提示。<a class="src" href="https://github.com/earendil-works/pi/blob/ac4ac9eaf69f2b01ca3af984a5c48f3b99b84278/packages/coding-agent/src/core/messages.ts#L11" data-expect="export const COMPACTION_SUMMARY_PREFIX">messages.ts:11</a> 未见有配置项可改。</li>
+  <li><b><code>custom</code> role 没有任何标识包装。</b>扩展塞进去的内容直接成为 <code>user</code> 消息，模型无从分辨它来自程序还是来自人。写扩展时必须自己在文本里说清楚。<a class="src" href="https://github.com/earendil-works/pi/blob/ac4ac9eaf69f2b01ca3af984a5c48f3b99b84278/packages/coding-agent/src/core/messages.ts#L162" data-expect="case &quot;custom&quot;: {">messages.ts:162–169</a></li>
+</ul>
+
+<p><b>检查过但未发现问题</b>：<code>convertToLlm</code> 是纯函数，不改入参数组（用 <code>.map().filter()</code> 产出新数组），因此不存在 <a href="ch03.html">第 03 章</a> §2 那种就地修改的隐患。</p>
+
+</section>
+
+<section id="s5">
+  <div class="sec-tag"><span class="cell"></span><span class="lab">§5 Takeaway 拿走什么</span></div>
+
+<ul class="takeaway">
+  <li><b>会话历史用自己的 role 体系，别迁就 LLM 的三种角色。</b>UI 渲染、回放、审计各有各的信息需求，压进三种 role 会不可逆地丢掉它们。
+    <span class="cond">适用条件：你需要回放或审计会话。<b>一次性对话不值得这层映射。</b></span></li>
+  <li><b>映射函数用穷尽性检查（TypeScript 的 <code>never</code>）兜底。</b>加新消息类型时忘记处理映射，是这类设计最典型的静默丢消息。
+    <span class="cond">适用条件：消息类型可被下游扩展。<b>封闭类型集不需要。</b></span></li>
+  <li><b>给用户一个「不进上下文」的逃生口，但仍然记进会话文件。</b>pi 的 <code>!!cmd</code> 是个好范例：既省 token，又不牺牲记录完整性。
+    <span class="cond">适用条件：用户能直接执行命令。<b>纯对话式 agent 无此需求。</b></span></li>
+  <li><b>如果你靠一段自然语言前缀让模型区分「摘要」和「用户原话」，把这件事当成 prompt 工程来测，不要当成结构保证。</b>它会失败，而且失败时没有任何信号。
+    <span class="cond">适用条件：所有做上下文压缩的 agent。<b>除非你的 provider 提供了原生的分层机制。</b></span></li>
+</ul>
+
+</section>
+
+<section id="quiz">
+  <div class="sec-tag"><span class="cell"></span><span class="lab">§ Self-check 自测</span></div>
+
+<div class="quiz">
+
+<div class="q" data-answer="b">
+  <p class="qprompt"><span class="qtype">场景</span>用户敲了 <code>!!git log</code>（双感叹号）。会话 JSONL 与发给模型的请求里，分别有没有这条？</p>
+  <div class="opts">
+    <button class="opt" type="button" data-ch="a">两边都有</button>
+    <button class="opt" type="button" data-ch="b">会话文件里有，请求里没有</button>
+    <button class="opt" type="button" data-ch="c">两边都没有，只显示在 UI 上</button>
+  </div>
+  <details><summary>看答案</summary><div class="answer">
+    <p><b>B。</b><code>excludeFromContext</code> 只在 <code>convertToLlm</code> 里生效，返回 <code>undefined</code> 后被 filter 掉。写入会话是另一条路径，不受影响。<a class="src" href="https://github.com/earendil-works/pi/blob/ac4ac9eaf69f2b01ca3af984a5c48f3b99b84278/packages/coding-agent/src/core/messages.ts#L154" data-expect="if (m.excludeFromContext) {">messages.ts:154</a></p>
+  </div></details>
+</div>
+
+<div class="q" data-answer="c">
+  <p class="qprompt"><span class="qtype">场景</span>一次压缩之后，模型在请求里看到的那条摘要，<code>role</code> 是什么？</p>
+  <div class="opts">
+    <button class="opt" type="button" data-ch="a"><code>system</code></button>
+    <button class="opt" type="button" data-ch="b"><code>compactionSummary</code></button>
+    <button class="opt" type="button" data-ch="c"><code>user</code>，内容被英文前后缀包住</button>
+  </div>
+  <details><summary>看答案</summary><div class="answer">
+    <p><b>C。</b>LLM 只认三种 role，<code>compactionSummary</code> 只存在于会话历史。转换时包上 <code>COMPACTION_SUMMARY_PREFIX/SUFFIX</code> 变成 <code>user</code>。<a class="src" href="https://github.com/earendil-works/pi/blob/ac4ac9eaf69f2b01ca3af984a5c48f3b99b84278/packages/coding-agent/src/core/messages.ts#L176" data-expect="case &quot;compactionSummary&quot;:">messages.ts:176–183</a></p>
+  </div></details>
+</div>
+
+</div>
+</section>
+
+<div class="next">
+  <a href="ch04.html">← 04 工具执行</a>
+  <a href="ch06.html">06 压缩 →</a>
+</div>
+
+<div class="anchor-foot">
+基于 <a href="https://github.com/earendil-works/pi/tree/ac4ac9eaf69f2b01ca3af984a5c48f3b99b84278">earendil-works/pi @ <code>ac4ac9e</code></a>（2026-08-07 快照）。<br>
+仓库 commit 速度约 428/月，行号引用仅对该 SHA 有效。
+</div>
+
+</div>
+<script src="../assets/quiz.js" defer></script>
+</body>
+</html>

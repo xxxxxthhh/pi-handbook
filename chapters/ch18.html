@@ -1,0 +1,218 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>18 贡献者门禁 · Pi 源码解读手册</title>
+<meta name="description" content="新贡献者 issue/PR 默认自动关闭；lgtm/lgtmi 两级授权">
+<link rel="icon" type="image/svg+xml" href="../assets/favicon.svg">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@500;700&family=Noto+Sans+SC:wght@400;500;700&family=IBM+Plex+Mono:wght@400;500&display=swap" rel="stylesheet" media="print" onload="this.media='all'">
+<noscript><link href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@500;700&family=Noto+Sans+SC:wght@400;500;700&family=IBM+Plex+Mono:wght@400;500&display=swap" rel="stylesheet"></noscript>
+<link rel="stylesheet" href="../assets/handbook.css">
+<script src="../assets/theme.js"></script>
+</head>
+<body>
+<button class="theme-toggle" type="button" aria-label="切换深色/浅色模式" title="切换深色/浅色模式">
+  <span class="sun" aria-hidden="true">☀️</span><span class="moon" aria-hidden="true">🌙</span>
+</button>
+<div class="wrap">
+<nav class="crumb"><a href="../index.html">← 目录</a> · <a href="../sources.html">溯源索引</a> · <a href="../drift.html">漂移记录</a></nav>
+
+<header class="ch">
+  <div class="bars" aria-hidden="true"><span class="l1"></span><span class="l2"></span><span class="l3"></span><span class="l4 f"></span></div>
+  <div class="kicker">Part V · Engineering &amp; Governance</div>
+  <h1>18 贡献者门禁
+    <span class="zh">默认关闭所有新人的 issue 和 PR——在 agent 时代，这可能是理性的</span>
+  </h1>
+  <div class="meta">
+    <span class="status shipped">已发布</span>
+    <span>已批准贡献者 <b>240 人</b></span>
+    <span>授权级别 <b>2 级</b></span>
+    <span>自动化 <b>3 个 workflow</b></span>
+  </div>
+</header>
+
+<section id="s1">
+  <div class="sec-tag"><span class="cell"></span><span class="lab">§1 Mental Model 一句话心智模型</span></div>
+  <h2>先记住这一句</h2>
+
+<div class="oneliner"><b>pi 把开源协作的默认值反了过来：<em>新人提交的 issue 和 PR 一律自动关闭</em>，维护者每天审阅被关闭的队列，把值得的重开。关闭不是拒绝，是<b>把「实时响应」的义务换成「按自己节奏批处理」的权利</b>。</b></div>
+
+<p>这看起来很不友好，但它回应的是一个新问题：agent 让「生成一个看起来很专业的 issue」的成本降到接近零，而「判断这个 issue 是否真实、是否值得投入」的成本<b>没有下降</b>。</p>
+
+<p>当提交成本崩塌而审阅成本不变时，任何「默认打开、事后过滤」的机制都会被压垮。pi 的应对是<b>把默认值从「打开」改成「关闭」</b>，并把开门的权限做成一个可以逐步授予的二级许可。</p>
+
+</section>
+
+<section id="s2">
+  <div class="sec-tag"><span class="cell"></span><span class="lab">§2 Evidence 代码实证</span></div>
+  <h2>规则原文</h2>
+
+<div class="tpl">
+  <div class="tpl-head"><span class="path">CONTRIBUTING.md</span><span class="lines literal">原文 L23 与 L27（并置）</span></div>
+  <pre><code>All issues and PRs from new contributors are auto-closed by default.
+
+Maintainers review auto-closed issues daily and reopen worthwhile ones. Issues that
+do not meet the quality bar below will not be reopened or receive a reply.</code></pre>
+  <div class="tpl-foot">关键在第二句：<b>承诺了每日审阅</b>。没有这个承诺，自动关闭就只是拒绝。<a class="src" href="https://github.com/earendil-works/pi/blob/ac4ac9eaf69f2b01ca3af984a5c48f3b99b84278/CONTRIBUTING.md#L23" data-expect="All issues and PRs from new contributors are auto-closed by default.">CONTRIBUTING.md:23</a></div>
+</div>
+
+<h2>两级授权，靠回复里的关键词触发</h2>
+
+<div class="tbl-scroll"><table><thead><tr><th>命令</th><th>授予</th></tr></thead><tbody>
+<tr><td><code>lgtmi</code></td><td>今后的 <b>issue</b> 不再被自动关闭。<b>不含</b>提 PR 的权利</td></tr>
+<tr><td><code>lgtm</code></td><td>今后的 issue <b>和</b> PR 都不再被自动关闭</td></tr>
+</tbody></table></div>
+
+<p>命令必须出现在维护者回复的<b>开头</b>（可以在若干 <code>@username</code> 提及之后）或<b>结尾</b>。<a class="src" href="https://github.com/earendil-works/pi/blob/ac4ac9eaf69f2b01ca3af984a5c48f3b99b84278/CONTRIBUTING.md#L34" data-expect="The command must be at the start of the reply">CONTRIBUTING.md:34</a> 这条位置约束不是形式主义——它防的是维护者在正文里写「this lgtm」被误判为授权。</p>
+
+<p>实现是两个正则：</p>
+
+<div class="tpl">
+  <div class="tpl-head"><span class="path">.github/workflows/approve-contributor.yml</span><span class="lines literal">原文 L33–L35</span></div>
+  <pre><code>const approvalAtStartPattern = /^[\s.]*(?:@[A-Za-z0-9](?:[A-Za-z0-9-]{0,37}[A-Za-z0-9])?(?:\s*,\s*|[.:]\s*|\s+))*(lgtmi|lgtm)(?=$|[\s]|[^\p{L}\p{N}_\s])/iu;
+const approvalAtEndPattern = /(?:^|[\s.])(lgtmi|lgtm)\s*(?:[^\p{L}\p{N}_\s])?\s*$/iu;
+const approvalMatch = commentBody.match(approvalAtStartPattern) ?? commentBody.match(approvalAtEndPattern);</code></pre>
+  <div class="tpl-foot">开头模式里那段 <code>@username</code> 的写法连 GitHub 用户名的长度规则（首尾字母数字、中间最多 37 字符）都编码进去了。<a class="src" href="https://github.com/earendil-works/pi/blob/ac4ac9eaf69f2b01ca3af984a5c48f3b99b84278/.github/workflows/approve-contributor.yml#L33" data-expect="const approvalAtStartPattern">approve-contributor.yml:33</a></div>
+</div>
+
+<p>授权结果写进一个纯文本文件 <code>.github/APPROVED_CONTRIBUTORS</code>，格式是 <code>&lt;username&gt; &lt;capability&gt;</code>。<a class="src" href="https://github.com/earendil-works/pi/blob/ac4ac9eaf69f2b01ca3af984a5c48f3b99b84278/.github/APPROVED_CONTRIBUTORS#L2" data-expect="Format: &lt;username&gt; &lt;capability&gt;">APPROVED_CONTRIBUTORS:2</a> 快照时共 <b>240</b> 条：<b>238</b> 条 <code>pr</code>、<b>2</b> 条 <code>issue</code>。</p>
+
+<p>这个比例本身是个发现：<b>拿到 <code>lgtmi</code>（只开 issue）的人几乎没有——维护者一旦决定开门，基本直接给全权。</b>两级设计在实践中退化成了一级。</p>
+
+<h2>关闭时说了什么</h2>
+
+<p>自动关闭的回复不是模板化的敷衍，它解释了机制并给出可行动的下一步：<a class="src" href="https://github.com/earendil-works/pi/blob/ac4ac9eaf69f2b01ca3af984a5c48f3b99b84278/.github/workflows/issue-gate.yml#L100" data-expect="This issue was auto-closed. All issues from new contributors are auto-closed by default.">issue-gate.yml:100</a> 并附上 CONTRIBUTING.md 的链接与「不符合质量标准的不会被重开也不会收到回复」的明确预期。<a class="src" href="https://github.com/earendil-works/pi/blob/ac4ac9eaf69f2b01ca3af984a5c48f3b99b84278/.github/workflows/issue-gate.yml#L102" data-expect="will not be reopened or receive a reply">issue-gate.yml:102</a></p>
+
+<h2>质量标准与「唯一规则」</h2>
+
+<div class="tpl">
+  <div class="tpl-head"><span class="path">CONTRIBUTING.md</span><span class="lines literal">原文 L15–L17</span></div>
+  <pre><code>**You must understand your code.** If you cannot explain what your changes do and how
+they interact with the rest of the system, your PR will be closed.
+
+Using AI to write code is fine. Submitting AI-generated slop without understanding it is not.</code></pre>
+  <div class="tpl-foot">注意它<b>没有</b>禁止用 AI 写代码——判据是「你能不能解释」，不是「是不是 AI 写的」。这是本章最重要的一句。<a class="src" href="https://github.com/earendil-works/pi/blob/ac4ac9eaf69f2b01ca3af984a5c48f3b99b84278/CONTRIBUTING.md#L15" data-expect="**You must understand your code.**">CONTRIBUTING.md:15</a></div>
+</div>
+
+<p>issue 的标准同样具体：<b>放不下一屏就太长了</b>；用自己的话写（非要用 LLM 生成，就补一条明确标注 AI 的评论）。<a class="src" href="https://github.com/earendil-works/pi/blob/ac4ac9eaf69f2b01ca3af984a5c48f3b99b84278/CONTRIBUTING.md#L42" data-expect="If it does not fit on one screen, it is too long.">CONTRIBUTING.md:42</a></p>
+
+<p>还有一条明码标价的封禁规则：忽视本文件两次，或用自动化灌大量 issue，<b>GitHub 账号永久拉黑</b>。<a class="src" href="https://github.com/earendil-works/pi/blob/ac4ac9eaf69f2b01ca3af984a5c48f3b99b84278/CONTRIBUTING.md#L52" data-expect="your GitHub account will be permanently blocked">CONTRIBUTING.md:52</a></p>
+
+<h2>周末降级</h2>
+
+<p>周五到周日提交的 issue 不保证被审阅；紧急问题去 Discord。<a class="src" href="https://github.com/earendil-works/pi/blob/ac4ac9eaf69f2b01ca3af984a5c48f3b99b84278/CONTRIBUTING.md#L25" data-expect="Issues submitted Friday through Sunday are not guaranteed to be reviewed.">CONTRIBUTING.md:25</a> FAQ 里的解释很直白：我们在工作时间做 triage。</p>
+
+<p>把「维护者也有作息」写进贡献指南，是这份文件里最不常见、也最诚实的一条。</p>
+
+</section>
+
+<section id="s3">
+  <div class="sec-tag"><span class="cell"></span><span class="lab">§3 Design 设计动机与权衡</span></div>
+  <h2>为什么这在 agent 时代是理性的</h2>
+
+<p>传统开源的隐含契约是：提交 issue 需要一定成本（复现、写清楚），这个成本本身就是过滤器。agent 把这个成本消灭了——现在任何人可以在 30 秒内产出一个格式完美、措辞专业、<b>可能完全基于幻觉</b>的 bug 报告。</p>
+
+<p>而 FAQ 里点出了更麻烦的一点：<b>「打磨得很漂亮的 AI 生成 issue 仍然可能是错的、误导性的，或者调查起来很昂贵。」</b><a class="src" href="https://github.com/earendil-works/pi/blob/ac4ac9eaf69f2b01ca3af984a5c48f3b99b84278/CONTRIBUTING.md#L93" data-expect="Polished AI-generated issues can still be wrong, misleading, or expensive to investigate.">CONTRIBUTING.md:93</a> 质量信号和真实性脱钩了——过去「写得好」是「认真做过功课」的代理指标，现在不是了。</p>
+
+<p>所以自动关闭真正改变的不是「谁能提 issue」，而是<b>时间的所有权</b>：从「issue 一来就欠一个回应」变成「维护者按自己的节奏批量处理」。<b>关闭一个 issue 不消耗注意力；让它开着会。</b></p>
+
+<h2>他们没有把 triage 交给 AI</h2>
+
+<p>FAQ 里专门有一问：为什么不让 AI 全权 triage？回答是——AI 可以帮忙归并重复、做摘要、指出缺失信息，但<b>不被信任做最终的维护者决定；人的审阅仍是最后一道关</b>。<a class="src" href="https://github.com/earendil-works/pi/blob/ac4ac9eaf69f2b01ca3af984a5c48f3b99b84278/CONTRIBUTING.md#L93" data-expect="It is not trusted to make final maintainer decisions.">CONTRIBUTING.md:93</a></p>
+
+<p>这个立场值得注意，因为它出自一个<b>做 agent 的团队</b>。他们在自己最熟悉的技术上划了一条界：用 AI 做归并与摘要（降低成本），不用 AI 做取舍（那是判断）。仓库里确实有 <code>issue-analysis.yml</code> 与 <code>issue-triage-labels.yml</code> 两个 workflow 承担前者。</p>
+
+<h2>代价：把偶然的好贡献一起挡掉</h2>
+
+<p>自动关闭是无差别的。一个路过的资深工程师发现真 bug、写了个精准的三行 issue——他也会被关闭，也要等到某天被重开。而一个被自动关闭的 issue 给人的第一印象是「不受欢迎」，很多人不会等。</p>
+
+<p>pi 的对冲有三条：承诺每日审阅、把规则和理由写得极其清楚、以及给 Discord 作为快速通道。<b>但这三条都要求提交者先读 CONTRIBUTING.md</b>——而被自动关闭的人里，最不可能读它的恰恰是那些随手扔个 issue 的人。这个机制筛掉的是低投入者，其中<b>混着一部分高价值的低投入者</b>。</p>
+
+<h2>240 人这个数字说明什么</h2>
+
+<p>门禁不是「只有核心团队能提 PR」。240 个已批准的账号，配上 286 位历史提交者（<a href="ch01.html">第 01 章</a>），说明这道门<b>确实在开</b>，只是要先敲。</p>
+
+<p>把它理解成「默认关闭 + 一次性人工准入」比理解成「封闭开发」更准确：<b>你只需要通过一次，之后就是正常贡献者。</b></p>
+
+</section>
+
+<section id="s4">
+  <div class="sec-tag"><span class="cell"></span><span class="lab">§4 Limits 边界与失效条件</span></div>
+
+<ul>
+  <li><b>依赖维护者真的每天看。</b>整个机制的正当性建立在「每日审阅被关闭队列」这个承诺上。承诺一旦不兑现，它就退化成「静默拒绝所有外部输入」，而外部无从分辨这两者。</li>
+  <li><b>两级授权在实践中退化成一级。</b>240 条里 238 条是 <code>pr</code>。<code>lgtmi</code> 这一级几乎没被用过——多一级的设计成本没有换来对应的收益。</li>
+  <li><b>规模不可迁移。</b>这套做法之所以可行，是因为 pi 有活跃维护者、有 Discord、有明确的产品方向。一个维护者已经倦怠的项目照抄这套，得到的只是一个自动拒绝机器人。</li>
+  <li><b>对首次贡献者的观感成本是真实的。</b>「issue 被自动关闭」在多数人的经验里等于「被无视」。文档解释得再清楚，也要人先点进去看。</li>
+  <li><b>门禁保护的是注意力，不是质量。</b>它不提高被接受的 PR 的质量，只减少需要看的数量。质量仍然靠「你必须理解你的代码」这条人工判据。</li>
+</ul>
+
+<p><b>检查过并确认</b>：<code>lgtm</code>/<code>lgtmi</code> 的位置约束在 workflow 里有真实实现（两个正则，开头/结尾各一），不是只写在文档里的口头规矩。<a class="src" href="https://github.com/earendil-works/pi/blob/ac4ac9eaf69f2b01ca3af984a5c48f3b99b84278/.github/workflows/approve-contributor.yml#L35" data-expect="const approvalMatch = commentBody.match(approvalAtStartPattern)">approve-contributor.yml:35</a></p>
+
+</section>
+
+<section id="s5">
+  <div class="sec-tag"><span class="cell"></span><span class="lab">§5 Takeaway 拿走什么</span></div>
+
+<ul class="takeaway">
+  <li><b>当提交成本崩塌而审阅成本不变时，改默认值，而不是加过滤规则。</b>过滤规则要逐条判断（仍然消耗注意力），改默认值不用。
+    <span class="cond">适用条件：你的 issue 队列已经超出团队处理能力。<b>队列健康时这么做纯粹是自伤。</b></span></li>
+  <li><b>自动关闭必须配一个明确的时间承诺，并把它写进文档。</b>「每日审阅并重开值得的」把「拒绝」变成「排队」。没有这句，机制就是关门。
+    <span class="cond">适用条件：你真的能兑现。<b>兑现不了就别写——写了又做不到比不写更糟。</b></span></li>
+  <li><b>判据定成「你能否解释你的代码」，而不是「是否用了 AI」。</b>后者不可验证也不该验证；前者在 review 中天然可测。
+    <span class="cond">适用条件：所有接受外部贡献的项目。<b>这是全章最该直接抄的一条。</b></span></li>
+  <li><b>用 AI 做归并和摘要，别用 AI 做取舍。</b>pi 是做 agent 的团队，他们在自己最熟的技术上划了这条线，值得当作一个信号。
+    <span class="cond">适用条件：triage 量大到需要自动化。<b>并且你能承受「AI 判错并静默关掉一个真 bug」的后果——不能就别自动化取舍。</b></span></li>
+</ul>
+
+</section>
+
+<section id="quiz">
+  <div class="sec-tag"><span class="cell"></span><span class="lab">§ Self-check 自测</span></div>
+
+<div class="quiz">
+
+<div class="q" data-answer="b">
+  <p class="qprompt"><span class="qtype">场景</span>维护者在回复里写「Nice find, this lgtm to me, will look tomorrow」。贡献者拿到授权了吗？</p>
+  <div class="opts">
+    <button class="opt" type="button" data-ch="a">拿到了 <code>lgtm</code>（issue + PR）</button>
+    <button class="opt" type="button" data-ch="b">没有——<code>lgtm</code> 出现在句中，既不在开头也不在结尾</button>
+    <button class="opt" type="button" data-ch="c">只拿到 <code>lgtmi</code></button>
+  </div>
+  <details><summary>看答案</summary><div class="answer">
+    <p><b>B。</b>两个正则分别锚定 <code>^</code>（可跳过 @mentions）与 <code>$</code>。句中的 lgtm 不匹配。这条位置约束正是为了防止随口一句被误判为正式授权。<a class="src" href="https://github.com/earendil-works/pi/blob/ac4ac9eaf69f2b01ca3af984a5c48f3b99b84278/.github/workflows/approve-contributor.yml#L34" data-expect="const approvalAtEndPattern">approve-contributor.yml:34</a></p>
+  </div></details>
+</div>
+
+<div class="q" data-answer="a">
+  <p class="qprompt"><span class="qtype">场景</span>你用 Claude 写了一个 PR，自己完整读过、能解释每一处改动。符合 pi 的规则吗？</p>
+  <div class="opts">
+    <button class="opt" type="button" data-ch="a">符合——判据是「你能否解释」，不是「是否用了 AI」</button>
+    <button class="opt" type="button" data-ch="b">不符合，禁止 AI 生成的代码</button>
+    <button class="opt" type="button" data-ch="c">符合，但必须在 PR 描述里声明用了 AI</button>
+  </div>
+  <details><summary>看答案</summary><div class="answer">
+    <p><b>A。</b>原文：「Using AI to write code is fine. Submitting AI-generated slop without understanding it is not.」（注意 issue <em>正文</em>另有要求：用自己的话写，非要用 LLM 生成就补一条明确标注 AI 的评论——那是对 issue 文本的要求，不是对代码的。）<a class="src" href="https://github.com/earendil-works/pi/blob/ac4ac9eaf69f2b01ca3af984a5c48f3b99b84278/CONTRIBUTING.md#L17" data-expect="Using AI to write code is fine.">CONTRIBUTING.md:17</a></p>
+  </div></details>
+</div>
+
+</div>
+</section>
+
+<div class="next">
+  <a href="ch17.html">← 17 AGENTS.md</a>
+  <a href="ch19.html">19 spec-driven 开发 →</a>
+</div>
+
+<div class="anchor-foot">
+基于 <a href="https://github.com/earendil-works/pi/tree/ac4ac9eaf69f2b01ca3af984a5c48f3b99b84278">earendil-works/pi @ <code>ac4ac9e</code></a>（2026-08-07 快照）。<br>
+仓库 commit 速度约 428/月，行号引用仅对该 SHA 有效。
+</div>
+
+</div>
+<script src="../assets/quiz.js" defer></script>
+</body>
+</html>

@@ -1,0 +1,201 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>17 AGENTS.md · Pi 源码解读手册</title>
+<meta name="description" content="写给 agent 的宪法：多 session 并发下的 git 纪律为什么必须写死">
+<link rel="icon" type="image/svg+xml" href="../assets/favicon.svg">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@500;700&family=Noto+Sans+SC:wght@400;500;700&family=IBM+Plex+Mono:wght@400;500&display=swap" rel="stylesheet" media="print" onload="this.media='all'">
+<noscript><link href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@500;700&family=Noto+Sans+SC:wght@400;500;700&family=IBM+Plex+Mono:wght@400;500&display=swap" rel="stylesheet"></noscript>
+<link rel="stylesheet" href="../assets/handbook.css">
+<script src="../assets/theme.js"></script>
+</head>
+<body>
+<button class="theme-toggle" type="button" aria-label="切换深色/浅色模式" title="切换深色/浅色模式">
+  <span class="sun" aria-hidden="true">☀️</span><span class="moon" aria-hidden="true">🌙</span>
+</button>
+<div class="wrap">
+<nav class="crumb"><a href="../index.html">← 目录</a> · <a href="../sources.html">溯源索引</a> · <a href="../drift.html">漂移记录</a></nav>
+
+<header class="ch">
+  <div class="bars" aria-hidden="true"><span class="l1"></span><span class="l2"></span><span class="l3"></span><span class="l4 f"></span></div>
+  <div class="kicker">Part V · Engineering &amp; Governance</div>
+  <h1>17 AGENTS.md
+    <span class="zh">当同一个目录里跑着好几个 agent，git 纪律必须写死</span>
+  </h1>
+  <div class="meta">
+    <span class="status shipped">已发布</span>
+    <span>规则文件 <b>165 行</b></span>
+    <span>禁用 git 命令 <b>7 条</b></span>
+  </div>
+</header>
+
+<section id="s1">
+  <div class="sec-tag"><span class="cell"></span><span class="lab">§1 Mental Model 一句话心智模型</span></div>
+  <h2>先记住这一句</h2>
+
+<div class="oneliner"><b>pi 的 <code>AGENTS.md</code> 不是「代码风格指南」，是一份并发协议。它最核心的一段基于一个具体事实：<em>同一个工作目录里可能同时跑着好几个 pi 会话，各自在改不同的文件。</em>所有 git 规则都是从这一句推出来的。</b></div>
+
+<p>这是本书里最容易被低估的一章。多数项目的 agent 规则文件写的是「用 2 空格缩进」「别加 emoji」这类偏好；pi 的这份里有相当篇幅在解决一个真实的分布式问题——<b>多个写者共享一个工作区</b>。</p>
+
+<p>推论只有一条，但很硬：<b>任何「作用于整个工作区」的 git 操作都是禁止的</b>，因为它必然踩到别人的未提交改动。</p>
+
+</section>
+
+<section id="s2">
+  <div class="sec-tag"><span class="cell"></span><span class="lab">§2 Evidence 代码实证</span></div>
+  <h2>前提写在开头</h2>
+
+<div class="tpl">
+  <div class="tpl-head"><span class="path">AGENTS.md</span><span class="lines literal">原文 L50</span></div>
+  <pre><code>Multiple pi sessions may be running in this cwd at the same time, each modifying
+different files. Git operations that touch unstaged, staged, or untracked files
+outside your own changes will stomp on other sessions' work. Follow these rules:</code></pre>
+  <div class="tpl-foot">注意措辞：不是「可能会有冲突」，而是<b>会踩坏别的会话的工作</b>（stomp on）。前提陈述得越具体，后面的规则越难被模型「灵活理解」。</div>
+</div>
+
+<h2>禁令清单：七条，无例外</h2>
+
+<div class="tpl">
+  <div class="tpl-head"><span class="path">AGENTS.md</span><span class="lines literal">原文 L60–L62</span></div>
+  <pre><code>Never run (destroys other agents' work or bypasses checks):
+
+- `git reset --hard`, `git checkout .`, `git clean -fd`, `git stash`,
+  `git add -A`, `git add .`, `git commit --no-verify`.</code></pre>
+  <div class="tpl-foot">前六条都是「作用域是整个工作区」的操作。第七条 <code>--no-verify</code> 是另一类——它绕过的是 <a href="ch16.html">第 16 章</a> 那道 pre-commit lockfile 门禁。</div>
+</div>
+
+<p>与之配套的是正向要求：<b>只提交你这个会话改过的文件；用显式路径 <code>git add &lt;path&gt;</code>；提交前先 <code>git status</code> 确认只暂存了自己的文件。</b><a class="src" href="https://github.com/earendil-works/pi/blob/ac4ac9eaf69f2b01ca3af984a5c48f3b99b84278/AGENTS.md#L55" data-expect="Stage explicit paths">AGENTS.md:55</a></p>
+
+<p>rebase 冲突的处理也顺着同一逻辑：只解决自己改过的文件里的冲突；<b>冲突出现在你没改过的文件里，就中止并问用户</b>；永不 force push。<a class="src" href="https://github.com/earendil-works/pi/blob/ac4ac9eaf69f2b01ca3af984a5c48f3b99b84278/AGENTS.md#L67" data-expect="If a conflict is in a file you did not modify, abort and ask the user.">AGENTS.md:67</a></p>
+
+<h2>其余规则的共同形状：给出理由，或给出替代动作</h2>
+
+<div class="tbl-scroll"><table><thead><tr><th>规则</th><th>为什么这样写有效</th></tr></thead><tbody>
+<tr><td>「改 bug 别降级代码去迁就过时依赖的类型错误，去升级依赖」<a class="src" href="https://github.com/earendil-works/pi/blob/ac4ac9eaf69f2b01ca3af984a5c48f3b99b84278/AGENTS.md#L19" data-expect="Never remove or downgrade code to fix type errors from outdated deps">AGENTS.md:19</a></td><td>点名了模型最常见的偷懒路径，并指定了正确动作</td></tr>
+<tr><td>「不要硬编码按键判断，加进 <code>DEFAULT_*_KEYBINDINGS</code> 保持可配置」<a class="src" href="https://github.com/earendil-works/pi/blob/ac4ac9eaf69f2b01ca3af984a5c48f3b99b84278/AGENTS.md#L23" data-expect="Never hardcode key checks">AGENTS.md:23</a></td><td>给了<b>具体的落点</b>，不是抽象原则</td></tr>
+<tr><td>「别直接改 <code>models.generated.ts</code>，改生成脚本再重新生成」<a class="src" href="https://github.com/earendil-works/pi/blob/ac4ac9eaf69f2b01ca3af984a5c48f3b99b84278/AGENTS.md#L24" data-expect="Never modify `packages/ai/src/models.generated.ts` directly">AGENTS.md:24</a></td><td>并补了一句「带上重新生成的 diff 总是 OK 的，即使包含无关的上游模型元数据变化」——<b>预先消除了模型的犹豫</b></td></tr>
+<tr><td>「移除看起来是有意为之的功能或代码前，先问」<a class="src" href="https://github.com/earendil-works/pi/blob/ac4ac9eaf69f2b01ca3af984a5c48f3b99b84278/AGENTS.md#L21" data-expect="Always ask before removing functionality">AGENTS.md:21</a></td><td>把「不确定时怎么办」显式化</td></tr>
+<tr><td>「广泛修改前、编辑没完整看过的文件前、被要求调查或审计时，完整读文件；不要靠搜索片段」<a class="src" href="https://github.com/earendil-works/pi/blob/ac4ac9eaf69f2b01ca3af984a5c48f3b99b84278/AGENTS.md#L14" data-expect="Do not rely on search snippets for broad changes.">AGENTS.md:14</a></td><td>针对的是 agent 特有的失败模式：grep 到一处就改</td></tr>
+</tbody></table></div>
+
+<h2>连「怎么跑测试」都规定得极细</h2>
+
+<p>「永远不要直接跑完整 vitest 套件」——因为里面含 e2e 测试，一旦环境里存在 endpoint/auth 环境变量就会激活，产生真实的 provider 调用和费用。替代方案给到了具体命令行。<a class="src" href="https://github.com/earendil-works/pi/blob/ac4ac9eaf69f2b01ca3af984a5c48f3b99b84278/AGENTS.md#L30" data-expect="Never run the full vitest suite directly">AGENTS.md:30</a></p>
+
+<p>对 <code>packages/coding-agent/test/suite/</code>，规则是用 harness + faux provider，<b>不许用真 provider API、密钥或付费 token</b>。<a class="src" href="https://github.com/earendil-works/pi/blob/ac4ac9eaf69f2b01ca3af984a5c48f3b99b84278/AGENTS.md#L34" data-expect="No real provider APIs, keys, or paid tokens.">AGENTS.md:34</a> 甚至规定了 issue 回归测试的存放路径与文件命名格式 <code>&lt;issue-number&gt;-&lt;short-slug&gt;.test.ts</code>。<a class="src" href="https://github.com/earendil-works/pi/blob/ac4ac9eaf69f2b01ca3af984a5c48f3b99b84278/AGENTS.md#L35" data-expect="named `&lt;issue-number&gt;-&lt;short-slug&gt;.test.ts`">AGENTS.md:35</a></p>
+
+<h2>最后一条：冲突时怎么办</h2>
+
+<div class="tpl">
+  <div class="tpl-head"><span class="path">AGENTS.md</span><span class="lines literal">原文 L165</span></div>
+  <pre><code>If the user's instructions conflict with any rule in this document, ask for explicit
+confirmation before overriding. Only then execute their instructions.</code></pre>
+  <div class="tpl-foot">这条解决的是规则文件最尴尬的处境：用户说「跑一下 <code>git stash</code>」时，agent 该听谁的。答案是——<b>先确认，确认后照用户说的做</b>。规则不凌驾于用户，但也不被随口推翻。</div>
+</div>
+
+</section>
+
+<section id="s3">
+  <div class="sec-tag"><span class="cell"></span><span class="lab">§3 Design 设计动机与权衡</span></div>
+  <h2>为什么「多会话共享工作区」这个前提值得整段规则</h2>
+
+<p>常规做法是给每个 agent 会话开一个 git worktree，物理隔离。pi 团队显然选择了不隔离——同一个 cwd 跑多个会话。</p>
+
+<p>好处推得出来：共享工作区意味着共享构建产物、共享 <code>node_modules</code>、共享正在运行的 dev server；一个会话改了类型，另一个会话立刻能看到。对一个 25 万行的 monorepo，重建成本很高，隔离的代价是实打实的。</p>
+
+<p>代价则是必须靠纪律替代隔离——而纪律的执行者是 LLM。所以规则写成了<b>命令级黑名单</b>而不是原则：模型可以误判「这个 <code>git checkout .</code> 应该没事」，但很难误判「这条命令在禁用清单里」。<b>禁令的具体程度，是对执行者可靠性的一种补偿。</b></p>
+
+<h2>这份文件的写法比内容更值得学</h2>
+
+<p>通读下来，有效规则都符合同一个模式：<b>不要 X</b> + <b>因为 Y</b> + <b>改为做 Z</b>。三段齐全的规则（比如 models.generated.ts 那条）几乎不会被误读；只有「不要 X」的规则容易被模型在边缘情况下自行放宽。</p>
+
+<p>另一个细节是<b>预先消除犹豫</b>。「带上重新生成的 diff 总是 OK 的，即使包含无关的上游模型元数据变化」——这句话存在的原因是：一个谨慎的 agent 看到自己的改动里混进了无关 diff，会停下来问。文档提前回答了这个问题，省掉一次往返。</p>
+
+<h2>与 CONTRIBUTING.md 的分工</h2>
+
+<p><code>AGENTS.md</code> 的开头就写明它是给<b>人和 agent 共用</b>的项目规则，而贡献者门槛在 <code>CONTRIBUTING.md</code>（<a href="ch18.html">第 18 章</a>）。<a class="src" href="https://github.com/earendil-works/pi/blob/ac4ac9eaf69f2b01ca3af984a5c48f3b99b84278/README.md#L50" data-expect="[AGENTS.md](AGENTS.md) for project-specific rules (for both humans and agents)">README.md:50</a></p>
+
+<p>这个分工是清晰的：<b>AGENTS.md 管「在这个仓库里怎么干活」，CONTRIBUTING.md 管「你有没有资格进来干活」</b>。而 <code>CONTRIBUTING.md</code> 里那句「如果你用 agent，请从 pi 根目录运行，让它自动读到 AGENTS.md」，把两者接了起来。<a class="src" href="https://github.com/earendil-works/pi/blob/ac4ac9eaf69f2b01ca3af984a5c48f3b99b84278/CONTRIBUTING.md#L19" data-expect="run it from the `pi` root directory so it picks up `AGENTS.md` automatically">CONTRIBUTING.md:19</a></p>
+
+</section>
+
+<section id="s4">
+  <div class="sec-tag"><span class="cell"></span><span class="lab">§4 Limits 边界与失效条件</span></div>
+
+<ul>
+  <li><b>全部靠模型遵守，没有任何强制。</b>禁用清单是文本，不是 hook。一个不读 <code>AGENTS.md</code> 的 agent（或读了但被长上下文冲淡的 agent）照样能跑 <code>git add -A</code>。唯一有真正强制力的是 pre-commit hook，而它只管 lockfile。</li>
+  <li><b>165 行的规则文件会占据上下文，并随压缩而衰减。</b>在一个长会话里，这份规则是最早被压缩掉的内容之一（<a href="ch06.html">第 06 章</a>：没有「pin 住某条消息」的机制）。<b>会话越长，纪律越松</b>——这个失效模式是结构性的。</li>
+  <li><b>「同一 cwd 多会话」这个前提对外部贡献者通常不成立。</b>大部分人只跑一个会话，于是那段最重要的规则对他们是纯粹的开销，也更容易被判断为「不适用于我」。</li>
+  <li><b>规则与代码可能不同步。</b>它引用了具体的常量名（<code>DEFAULT_EDITOR_KEYBINDINGS</code>）、路径、命令。这些一旦重构，规则就指向不存在的东西——而没有任何校验器检查这件事。</li>
+</ul>
+
+<p><b>检查过并确认</b>：<code>AGENTS.md</code> 中引用的 <code>DEFAULT_EDITOR_KEYBINDINGS</code> 与 <code>DEFAULT_APP_KEYBINDINGS</code> 在锚定 SHA 上确实存在于 <code>packages/coding-agent/src</code>，未构成漂移。</p>
+
+</section>
+
+<section id="s5">
+  <div class="sec-tag"><span class="cell"></span><span class="lab">§5 Takeaway 拿走什么</span></div>
+
+<ul class="takeaway">
+  <li><b>规则写成「不要 X + 因为 Y + 改为做 Z」三段式。</b>只有「不要 X」的规则会在边缘情况被模型自行放宽；给了替代动作的不会。
+    <span class="cond">适用条件：所有 agent 规则文件。<b>这是全章最普适的一条。</b></span></li>
+  <li><b>把危险操作写成具体命令的黑名单，而不是抽象原则。</b>「不要做破坏性 git 操作」需要判断；「不要跑 <code>git add -A</code>」不需要。执行者越不可靠，规则就该越具体。
+    <span class="cond">适用条件：执行者是 LLM。<b>对人类同事，抽象原则反而更好——具体清单显得不信任。</b></span></li>
+  <li><b>预先回答「agent 会在哪里停下来问」。</b>比如「带上无关的重新生成 diff 是 OK 的」——一句话省掉一次往返。
+    <span class="cond">适用条件：你观察到 agent 反复在同一处犹豫。<b>这条只能靠积累，写不出来第一版。</b></span></li>
+  <li><b>如果你选择「共享工作区 + 纪律」而不是「worktree 隔离」，要清楚你把可靠性押在了模型的服从上。</b>并且知道这个服从会随上下文长度衰减。
+    <span class="cond">代价：<b>长会话末期的纪律最松，而那恰恰是改动最多、最累的时候。</b></span></li>
+</ul>
+
+</section>
+
+<section id="quiz">
+  <div class="sec-tag"><span class="cell"></span><span class="lab">§ Self-check 自测</span></div>
+
+<div class="quiz">
+
+<div class="q" data-answer="b">
+  <p class="qprompt"><span class="qtype">场景</span>你在 pi 仓库里让 agent「把工作区清干净重来」。按 <code>AGENTS.md</code>，它该怎么做？</p>
+  <div class="opts">
+    <button class="opt" type="button" data-ch="a">跑 <code>git reset --hard</code> + <code>git clean -fd</code></button>
+    <button class="opt" type="button" data-ch="b">先说明这些命令在禁用清单里并要求明确确认，之后才执行</button>
+    <button class="opt" type="button" data-ch="c">只 revert 自己改过的文件，不问</button>
+  </div>
+  <details><summary>看答案</summary><div class="answer">
+    <p><b>B。</b>两条都在 Never run 清单里，而末尾的 User Override 条款要求：与用户指令冲突时先要求显式确认，<b>确认之后才执行用户的指令</b>。规则不凌驾于用户，但也不被随口推翻。<a class="src" href="https://github.com/earendil-works/pi/blob/ac4ac9eaf69f2b01ca3af984a5c48f3b99b84278/AGENTS.md#L165" data-expect="ask for explicit confirmation before overriding">AGENTS.md:165</a></p>
+  </div></details>
+</div>
+
+<div class="q" data-answer="c">
+  <p class="qprompt"><span class="qtype">场景</span>为什么 <code>AGENTS.md</code> 禁止直接跑完整 vitest 套件？</p>
+  <div class="opts">
+    <button class="opt" type="button" data-ch="a">太慢</button>
+    <button class="opt" type="button" data-ch="b">会与其它会话的测试进程冲突</button>
+    <button class="opt" type="button" data-ch="c">套件里含 e2e 测试，环境变量一具备就激活，产生真实 provider 调用和费用</button>
+  </div>
+  <details><summary>看答案</summary><div class="answer">
+    <p><b>C。</b>原文：「it includes e2e tests that activate when endpoint/auth env vars are present」。替代方案是 <code>./test.sh</code> 或指定单个测试文件。<a class="src" href="https://github.com/earendil-works/pi/blob/ac4ac9eaf69f2b01ca3af984a5c48f3b99b84278/AGENTS.md#L30" data-expect="Never run the full vitest suite directly">AGENTS.md:30</a></p>
+  </div></details>
+</div>
+
+</div>
+</section>
+
+<div class="next">
+  <a href="ch16.html">← 16 供应链硬化</a>
+  <a href="ch18.html">18 贡献者门禁 →</a>
+</div>
+
+<div class="anchor-foot">
+基于 <a href="https://github.com/earendil-works/pi/tree/ac4ac9eaf69f2b01ca3af984a5c48f3b99b84278">earendil-works/pi @ <code>ac4ac9e</code></a>（2026-08-07 快照）。<br>
+仓库 commit 速度约 428/月，行号引用仅对该 SHA 有效。
+</div>
+
+</div>
+<script src="../assets/quiz.js" defer></script>
+</body>
+</html>

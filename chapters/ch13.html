@@ -1,0 +1,165 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>13 自扩展的含义 · Pi 源码解读手册</title>
+<meta name="description" content=".pi/ 目录、prompts、skills；pi 用 pi 开发自己的闭环">
+<link rel="icon" type="image/svg+xml" href="../assets/favicon.svg">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@500;700&family=Noto+Sans+SC:wght@400;500;700&family=IBM+Plex+Mono:wght@400;500&display=swap" rel="stylesheet" media="print" onload="this.media='all'">
+<noscript><link href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@500;700&family=Noto+Sans+SC:wght@400;500;700&family=IBM+Plex+Mono:wght@400;500&display=swap" rel="stylesheet"></noscript>
+<link rel="stylesheet" href="../assets/handbook.css">
+<script src="../assets/theme.js"></script>
+</head>
+<body>
+<button class="theme-toggle" type="button" aria-label="切换深色/浅色模式" title="切换深色/浅色模式">
+  <span class="sun" aria-hidden="true">☀️</span><span class="moon" aria-hidden="true">🌙</span>
+</button>
+<div class="wrap">
+<nav class="crumb"><a href="../index.html">← 目录</a> · <a href="../sources.html">溯源索引</a> · <a href="../drift.html">漂移记录</a></nav>
+
+<header class="ch">
+  <div class="bars" aria-hidden="true"><span class="l1"></span><span class="l2"></span><span class="l3"></span><span class="l4 f"></span></div>
+  <div class="kicker">Part IV · Interface &amp; Extensions</div>
+  <h1>13 自扩展的含义
+    <span class="zh">看 .pi/ 目录，而不是看 README 里的形容词</span>
+  </h1>
+  <div class="meta"><span class="status shipped">已发布</span><span>自带扩展 <b>4 个</b></span><span>prompt 模板 <b>5 个</b></span><span>skill <b>1 个</b></span></div>
+</header>
+
+<section id="s1">
+  <div class="sec-tag"><span class="cell"></span><span class="lab">§1 Mental Model 一句话心智模型</span></div>
+
+  <h2>先记住这一句</h2>
+<div class="oneliner"><b>「自扩展」在 pi 这里不是宣传语，是一个可验证的闭环：<em>仓库自己的 <code>.pi/</code> 目录里装着 4 个扩展和 5 个 prompt，pi 的维护者用它们开发 pi。</em>其中一个扩展的职责，是把 CI 里 pi 分析 issue 产生的会话导入到本地复现。</b></div>
+<p>判断「self-extensible」是不是空话，最快的方法不是读 README，是看<b>项目自己用不用</b>。</p>
+
+</section>
+
+<section id="s2">
+  <div class="sec-tag"><span class="cell"></span><span class="lab">§2 Evidence 代码实证</span></div>
+
+  <h2>仓库自带的 .pi 目录</h2>
+<div class="tbl-scroll"><table><thead><tr><th>路径</th><th>内容</th></tr></thead><tbody>
+<tr><td><code>.pi/extensions/</code></td><td><code>redraws.ts</code>（TUI 重绘统计）、<code>tps.ts</code>（token/s）、<code>prompt-url-widget.ts</code>、<code>import-repro.ts</code></td></tr>
+<tr><td><code>.pi/prompts/</code></td><td><code>wr.md</code>、<code>pr.md</code>、<code>sa.md</code>、<code>cl.md</code>、<code>is.md</code></td></tr>
+<tr><td><code>.pi/skills/</code></td><td><code>add-llm-provider.md</code></td></tr>
+</tbody></table></div>
+
+  <h2>闭环的证据：import-repro.ts</h2>
+<div class="tpl">
+  <div class="tpl-head"><span class="path">.pi/extensions/import-repro.ts</span><span class="lines literal">原文 L2–L6</span></div>
+  <pre><code> * Import a pi session shared as a gist by the issue-analysis CI workflow
+ * (.github/workflows/issue-analysis.yml) and switch to it.
+ *
+ * The CI job runs in a high-entropy checkout directory; this command rewrites
+ * the recorded cwd to the local checkout, installs the session file into the …</code></pre>
+  <div class="tpl-foot"><a class="src" href="https://github.com/earendil-works/pi/blob/ac4ac9eaf69f2b01ca3af984a5c48f3b99b84278/.pi/extensions/import-repro.ts#L2" data-expect="Import a pi session shared as a gist by the issue-analysis CI workflow">import-repro.ts:2</a></div>
+</div>
+
+<p>对应的 CI workflow 第一行写明触发条件：<b>当 issue 被打上 <code>pi-analyze</code> 标签时，对该 issue 跑仓库自己的 <code>/is</code> prompt</b>。<a class="src" href="https://github.com/earendil-works/pi/blob/ac4ac9eaf69f2b01ca3af984a5c48f3b99b84278/.github/workflows/issue-analysis.yml#L1" data-expect="/is prompt against an issue when the `pi-analyze` label is added">issue-analysis.yml:1</a></p>
+
+<p>把这两端接起来，闭环是：<b>issue 打标签 → CI 用 pi 分析 → 会话作为 gist 发布 → 维护者用 pi 的一个扩展把该会话导入本地 → 在本地继续那次调查。</b>会话（<a href="ch07.html">第 07 章</a>）在这里成了 CI 与本地之间的交换格式。</p>
+
+  <h2>prompt 模板也是仓库资产</h2>
+<p><code>.pi/prompts/*.md</code> 是可被 <code>/名字</code> 调用的 prompt 模板，带 YAML frontmatter（<code>description</code>、<code>argument-hint</code>）。以 <code>sa.md</code>（更新安全公告）为例，它写了完整的调查流程、CVSS 讨论步骤、草稿格式、以及一组安全规则——包括「不要用浏览器会话或 cookie 去抓公告评论」和「绝不假装读过评论」。</p>
+<p>这类模板与 <a href="ch17.html">第 17 章</a>的 <code>AGENTS.md</code> 属于同一类资产：<b>把重复性的、容易出错的工作流固化成文本，交给 agent 执行。</b>区别是 AGENTS.md always-on，prompt 模板按需调用。</p>
+
+  <h2>skills</h2>
+<p><code>.pi/skills/add-llm-provider.md</code>——把「给 pi 加一个新 provider」这个高频且有固定套路的任务写成了 skill。文档对 skills 的第一句话是：<b>「pi 可以创建 skill。让它给你的场景做一个。」</b><a class="src" href="https://github.com/earendil-works/pi/blob/ac4ac9eaf69f2b01ca3af984a5c48f3b99b84278/packages/coding-agent/docs/skills.md#L1" data-expect="pi can create skills. Ask it to build one for your use case.">skills.md:1</a></p>
+
+</section>
+
+<section id="s3">
+  <div class="sec-tag"><span class="cell"></span><span class="lab">§3 Design 设计动机与权衡</span></div>
+
+  <h2>「项目自己用」是最强的可用性证据</h2>
+<p>一个扩展系统可以很完备但没人用。<code>.pi/</code> 目录的存在把这个问题变成可验证的：4 个扩展全是<b>为解决维护者真实痛点</b>而写的（重绘卡不卡、token 速度多少、issue 怎么复现），不是示例代码。</p>
+<p>更进一步：<code>redraws.ts</code> 只有 24 行。<b>一个 24 行就能解决真实问题的扩展 API，比 2988 行文档更能说明它好不好用。</b></p>
+
+  <h2>会话作为交换格式</h2>
+<p><code>import-repro</code> 这条链路依赖一个前提：<b>会话是可移植的文件</b>。<a href="ch07.html">第 07 章</a>的 JSONL 设计在这里兑现了一个当初未必是主要目标的收益——CI 环境里的一次调查，可以原样搬到开发者机器上继续。</p>
+<p>需要处理的差异只有 cwd（CI 的检出目录是高熵路径），扩展做的正是重写这一项。<b>这说明会话文件里与环境耦合的东西很少</b>，是个好设计的旁证。</p>
+
+  <h2>与 README 的「让 agent 自己解释自己」</h2>
+<p>README 说文档可以读，「但你也可以直接让 agent 解释它自己」。配合 skills 文档那句「pi 可以创建 skill」，这里有一个一致的姿态：<b>把 agent 当作接触这个代码库的界面之一</b>。</p>
+<p>这个姿态的可信度取决于代码库对 agent 友好的程度——而 <code>AGENTS.md</code>、<code>.pi/prompts/</code>、以及 <a href="ch19.html">第 19 章</a>那套机读的工作包协议，都是在为此铺路。</p>
+
+</section>
+
+<section id="s4">
+  <div class="sec-tag"><span class="cell"></span><span class="lab">§4 Limits 边界与失效条件</span></div>
+
+<ul>
+  <li><b>4 个扩展是个小样本。</b>它们证明了 API 可用，但没证明 API 覆盖了多样的需求。<code>examples/extensions/</code> 下另有若干示例（subagent、plan-mode、doom-overlay 等），那些更接近能力展示而非日常使用。</li>
+  <li><b><code>.pi/</code> 里的扩展要项目被信任才加载。</b>clone 下来第一次跑 pi 并拒绝信任，这些扩展不会生效（<a href="ch15.html">第 15 章</a>）。</li>
+  <li><b>「让 agent 解释自己」的质量无法验证。</b>本书不评估这条路径的实际效果——它取决于模型、上下文预算和提问方式，不取决于仓库。</li>
+  <li><b>prompt 模板中的操作指令是给 agent 的，不是可执行代码。</b><code>sa.md</code> 里那些安全规则（不许用 cookie 抓评论、不许假装读过）靠模型遵守，与 <a href="ch17.html">第 17 章</a> 的 AGENTS.md 是同一种赌注。</li>
+</ul>
+
+</section>
+
+<section id="s5">
+  <div class="sec-tag"><span class="cell"></span><span class="lab">§5 Takeaway 拿走什么</span></div>
+
+<ul class="takeaway">
+  <li><b>想验证一个扩展系统好不好用，看项目自己的配置目录，不看文档长度。</b>24 行解决真实问题的扩展，胜过 3000 行 API 参考。
+    <span class="cond">适用条件：评估任何可扩展工具。<b>这是本章最实用的一条判据。</b></span></li>
+  <li><b>让会话成为可移植文件，CI 与本地之间就多了一条调查交接的通路。</b>前提是会话里与环境耦合的字段足够少。
+    <span class="cond">适用条件：你在 CI 里跑 agent。<b>需要会话格式先做到环境无关。</b></span></li>
+  <li><b>把重复且易错的工作流固化成 prompt 模板，放进仓库。</b>它与 always-on 的规则文件互补：规则管日常纪律，模板管特定流程。
+    <span class="cond">适用条件：存在「每次都要按同样步骤做」的运维任务（发安全公告、写 changelog、审 PR）。</span></li>
+</ul>
+
+</section>
+
+
+<section id="quiz">
+  <div class="sec-tag"><span class="cell"></span><span class="lab">§ Self-check 自测</span></div>
+  <h2>给场景，判断 pi 会怎么做</h2>
+
+<div class="quiz">
+
+<div class="q" data-answer="b">
+  <p class="qprompt"><span class="qtype">场景</span>CI 里 pi 分析了一个 issue，产出一次完整的调查会话。维护者想在本地<b>继续</b>那次调查而不是重跑。靠什么？</p>
+  <div class="opts">
+    <button class="opt" type="button" data-ch="a">把 CI 日志喂给本地 pi</button>
+    <button class="opt" type="button" data-ch="b"><code>import-repro</code> 扩展导入 gist 里的会话文件并重写 cwd</button>
+    <button class="opt" type="button" data-ch="c">做不到，会话绑定机器</button>
+  </div>
+  <details><summary>看答案</summary><div class="answer">
+    <p><b>B。</b><a class="src" href="https://github.com/earendil-works/pi/blob/ac4ac9eaf69f2b01ca3af984a5c48f3b99b84278/.pi/extensions/import-repro.ts#L2" data-expect="Import a pi session shared as a gist by the issue-analysis CI workflow">import-repro.ts:2</a> 会话是可移植文件，唯一与环境耦合的 cwd 由扩展重写——JSONL 会话格式在这里兑现了「CI 与本地交换调查现场」的收益。</p>
+  </div></details>
+</div>
+
+<div class="q" data-answer="b">
+  <p class="qprompt"><span class="qtype">场景</span>两个工具都自称 self-extensible，你只有十分钟做选型验证。最快的判据是什么？</p>
+  <div class="opts">
+    <button class="opt" type="button" data-ch="a">比较扩展文档的完整度</button>
+    <button class="opt" type="button" data-ch="b">看项目<b>自己的</b>配置目录里有没有解决真实痛点的扩展</button>
+    <button class="opt" type="button" data-ch="c">比较扩展市场的数量</button>
+  </div>
+  <details><summary>看答案</summary><div class="answer">
+    <p><b>B。</b>pi 的 <code>.pi/extensions/</code> 里是 4 个为维护者真实痛点写的扩展，其中 <code>redraws.ts</code> 只有 24 行——24 行能解决真实问题的 API，比 2988 行文档更能说明可用性。</p>
+  </div></details>
+</div>
+
+</div>
+</section>
+
+<div class="next">
+  <a href="ch12.html">← 12 扩展系统</a>
+  <a href="ch14.html">14 headless →</a>
+</div>
+
+<div class="anchor-foot">
+基于 <a href="https://github.com/earendil-works/pi/tree/ac4ac9eaf69f2b01ca3af984a5c48f3b99b84278">earendil-works/pi @ <code>ac4ac9e</code></a>（2026-08-07 快照）。<br>
+仓库 commit 速度约 428/月，行号引用仅对该 SHA 有效。
+</div>
+
+</div>
+<script src="../assets/quiz.js" defer></script>
+</body>
+</html>

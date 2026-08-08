@@ -1,0 +1,81 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>漂移记录 · Pi 源码解读手册</title>
+<meta name="description" content="文档与代码不一致之处，每条双向举证">
+<link rel="icon" type="image/svg+xml" href="assets/favicon.svg">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@500;700&family=Noto+Sans+SC:wght@400;500;700&family=IBM+Plex+Mono:wght@400;500&display=swap" rel="stylesheet" media="print" onload="this.media='all'">
+<noscript><link href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@500;700&family=Noto+Sans+SC:wght@400;500;700&family=IBM+Plex+Mono:wght@400;500&display=swap" rel="stylesheet"></noscript>
+<link rel="stylesheet" href="assets/handbook.css">
+<script src="assets/theme.js"></script>
+</head>
+<body>
+<button class="theme-toggle" type="button" aria-label="切换深色/浅色模式" title="切换深色/浅色模式">
+  <span class="sun" aria-hidden="true">☀️</span><span class="moon" aria-hidden="true">🌙</span>
+</button>
+<div class="wrap"><nav class="crumb"><a href="index.html">← 目录</a> · <a href="sources.html">溯源索引</a> · <a href="glossary.html">术语表</a></nav>
+
+<header class="book-head">
+  <div class="bars" aria-hidden="true"><span class="l1"></span><span class="l2 w"></span><span class="l3 w"></span><span class="l4 f"></span></div>
+  <div class="kicker">Documentation Drift</div>
+  <h1>漂移记录<span class="zh">文档说的，和代码做的，不一样的地方</span></h1>
+  <p class="lede">收录标准（SKELETON §7）：只收<b>可双向举证</b>的条目——文档侧与代码侧各给一个 <code>path:line</code>，两侧都由校验器核对。不收笔误、格式问题、以及显然无害的历史遗留。</p>
+  <div class="meta"><span>条目 <b>3</b></span><span>上游文档 <b>32945 行 / 97 个文件</b></span></div>
+</header>
+
+<div class="callout no">
+  <p><b>这 3 条不是系统性扫描的结果</b>，是写作 21 章过程中的顺手发现。一次针对 32945 行 markdown 的完整核对必然会找出更多。把本页当作「这类问题存在」的证据，不是「问题只有这些」的清单。</p>
+</div>
+
+<div class="drift" id="d1">
+  <div class="dh">d1 · 严重度 中 · 见 <a href="chapters/ch03.html">ch03</a></div>
+  <h3>README 的 Low-Level API 示例掩盖了 agentLoopContinue 会就地修改调用方数组</h3>
+  <dl>
+    <dt>文档说</dt>
+    <dd>示例构造一个 context 对象，先后喂给 agentLoop() 和 agentLoopContinue()，未提两者对 messages 数组的处理不同<br><a class="src" href="https://github.com/earendil-works/pi/blob/ac4ac9eaf69f2b01ca3af984a5c48f3b99b84278/packages/agent/README.md#L482" data-expect="const context: AgentContext = {">packages/agent/README.md:482</a></dd>
+    <dt>代码是</dt>
+    <dd>runAgentLoopContinue 浅拷贝 context，messages 仍是调用方那个数组的引用；循环全程 push 进去。runAgentLoop 则在 L104 新建数组，调用方数组不受影响。<br><a class="src" href="https://github.com/earendil-works/pi/blob/ac4ac9eaf69f2b01ca3af984a5c48f3b99b84278/packages/agent/src/agent-loop.ts#L136" data-expect="const currentContext: AgentContext = { ...context };">packages/agent/src/agent-loop.ts:136</a></dd>
+    <dt>影响</dt>
+    <dd>照 README 示例写的低层调用方，其 context.messages 会在 agentLoopContinue 之后被追加了整轮消息，而 agentLoop 之后不会。同一个对象、两个入口、两种语义，且签名看不出来。Agent 类使用者不受影响（agent.ts:437 每次 slice 快照）。</dd>
+  </dl>
+</div>
+
+<div class="drift" id="d2">
+  <div class="dh">d2 · 严重度 低 · 见 <a href="chapters/ch15.html">ch15</a></div>
+  <h3>security.md 的 Security Policy 链接仍指向旧仓名 pi-mono</h3>
+  <dl>
+    <dt>文档说</dt>
+    <dd>链接写死 earendil-works/pi-mono<br><a class="src" href="https://github.com/earendil-works/pi/blob/ac4ac9eaf69f2b01ca3af984a5c48f3b99b84278/packages/coding-agent/docs/security.md#L57" data-expect="earendil-works/pi-mono/blob/main/SECURITY.md">packages/coding-agent/docs/security.md:57</a></dd>
+    <dt>代码是</dt>
+    <dd>仓库已更名为 earendil-works/pi；GitHub 对 pi-mono 返回 301 重定向到 pi（curl -I 实测）。仓库内多处 markdown 仍残留 pi-mono 链接。<br><a class="src" href="https://github.com/earendil-works/pi/blob/ac4ac9eaf69f2b01ca3af984a5c48f3b99b84278/README.md#L2" data-expect="https://pi.dev">README.md:2</a></dd>
+    <dt>影响</dt>
+    <dd>链接目前仍可达（靠 GitHub 的重定向）。风险在于重定向是 GitHub 的服务承诺而非仓库自身保证：若日后有人注册 earendil-works/pi-mono，这些链接会静默指向他人仓库。安全策略链接尤其不该依赖重定向。</dd>
+  </dl>
+</div>
+
+<div class="drift" id="d3">
+  <div class="dh">d3 · 严重度 高 · 见 <a href="chapters/ch06.html">ch06</a></div>
+  <h3>compaction 存在两份独立实现，文档只描述其中一份</h3>
+  <dl>
+    <dt>文档说</dt>
+    <dd>文档的 Source files 一节只列 packages/coding-agent/src/core/compaction/*，读者会认为那是唯一实现<br><a class="src" href="https://github.com/earendil-works/pi/blob/ac4ac9eaf69f2b01ca3af984a5c48f3b99b84278/packages/coding-agent/docs/compaction.md#L6" data-expect="packages/coding-agent/src/core/compaction/compaction.ts">packages/coding-agent/docs/compaction.md:6</a></dd>
+    <dt>代码是</dt>
+    <dd>packages/agent 另有一份 harness/compaction/compaction.ts（848 行），并从 @earendil-works/pi-agent-core 的公开 API 导出 compact / prepareCompaction / shouldCompact / findCutPoint 等同名函数。两份文件 diff 达 880 行，导出函数名仅一处不同（completeSummarization vs completeSimpleWithRetries）。coding-agent CLI 用的是自己那份（core/compaction/index.ts），并不消费 agent 包的那份。<br><a class="src" href="https://github.com/earendil-works/pi/blob/ac4ac9eaf69f2b01ca3af984a5c48f3b99b84278/packages/agent/src/index.ts#L75" data-expect="} from &quot;./harness/compaction/compaction.ts&quot;;">packages/agent/src/index.ts:75</a></dd>
+    <dt>影响</dt>
+    <dd>同一组函数名存在于两个已发布的 npm 包中，实现独立演进。按文档读源码的人看到的是 CLI 那份；用 @earendil-works/pi-agent-core 写代码的人调到的是另一份。文档没有任何地方提示这种分叉。这是 harness-v2 迁移期的中间态，但对库使用者是当下的事实。</dd>
+  </dl>
+</div>
+
+
+<div class="anchor-foot">
+基于 <a href="https://github.com/earendil-works/pi/tree/ac4ac9eaf69f2b01ca3af984a5c48f3b99b84278">earendil-works/pi @ <code>ac4ac9e</code></a>（2026-08-07 快照）。<br>
+本页由 <code>tools/gen-aux.mjs</code> 生成，数字来自 <code>data/stats.json</code>，未手写。
+</div>
+
+</div>
+</body>
+</html>

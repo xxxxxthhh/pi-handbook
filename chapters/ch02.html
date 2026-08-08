@@ -1,0 +1,197 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>02 三层边界 · Pi 源码解读手册</title>
+<meta name="description" content="pi-ai / pi-agent-core / pi-coding-agent 各自守什么，什么被刻意留在上层">
+<link rel="icon" type="image/svg+xml" href="../assets/favicon.svg">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@500;700&family=Noto+Sans+SC:wght@400;500;700&family=IBM+Plex+Mono:wght@400;500&display=swap" rel="stylesheet" media="print" onload="this.media='all'">
+<noscript><link href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@500;700&family=Noto+Sans+SC:wght@400;500;700&family=IBM+Plex+Mono:wght@400;500&display=swap" rel="stylesheet"></noscript>
+<link rel="stylesheet" href="../assets/handbook.css">
+<script src="../assets/theme.js"></script>
+</head>
+<body>
+<button class="theme-toggle" type="button" aria-label="切换深色/浅色模式" title="切换深色/浅色模式">
+  <span class="sun" aria-hidden="true">☀️</span><span class="moon" aria-hidden="true">🌙</span>
+</button>
+<div class="wrap">
+<nav class="crumb"><a href="../index.html">← 目录</a> · <a href="../sources.html">溯源索引</a> · <a href="../drift.html">漂移记录</a></nav>
+
+<header class="ch">
+  <div class="bars" aria-hidden="true"><span class="l1"></span><span class="l2"></span><span class="l3"></span><span class="l4 f"></span></div>
+  <div class="kicker">Part I · The Map</div>
+  <h1>02 三层边界
+    <span class="zh">每一层守住的东西，正好是上一层不想知道的东西</span>
+  </h1>
+  <div class="meta">
+    <span class="status shipped">已发布</span>
+    <span>provider <b>39 个</b></span>
+    <span>内建工具 <b>7 个</b></span>
+    <span>扩展事件 <b>25 类</b></span>
+  </div>
+</header>
+
+<section id="s1">
+  <div class="sec-tag"><span class="cell"></span><span class="lab">§1 Mental Model 一句话心智模型</span></div>
+  <h2>先记住这一句</h2>
+
+<div class="oneliner"><b>三层的分工可以用「谁知道什么」来概括：<code>ai</code> 知道 provider 但不知道循环；<code>agent</code> 知道循环但不知道文件系统长什么样；<code>coding-agent</code> 知道用户，并且承担全部产品决策。</b></div>
+
+<div class="tbl-scroll"><table><thead><tr><th>层</th><th>它知道</th><th>它<b>刻意不知道</b></th></tr></thead><tbody>
+<tr><td><code>pi-ai</code></td><td>39 家 provider 的请求格式、认证、流式差异、token 计费</td><td>什么是「一轮对话」；什么是工具执行</td></tr>
+<tr><td><code>pi-agent-core</code></td><td>循环、工具调用协议、会话存储、压缩</td><td>工具具体做什么；UI 怎么渲染；用户是谁</td></tr>
+<tr><td><code>pi-coding-agent</code></td><td>7 个内建工具、扩展、TUI、设置、权限（没有）、产品行为</td><td>—（它是终点）</td></tr>
+</tbody></table></div>
+
+<p>这个分层最实用的用途是<b>定位问题</b>：模型返回格式不对 → <code>ai</code>；工具跑了但结果没进上下文 → <code>agent</code>；工具行为不符合预期 → <code>coding-agent</code>。</p>
+
+</section>
+
+<section id="s2">
+  <div class="sec-tag"><span class="cell"></span><span class="lab">§2 Evidence 代码实证</span></div>
+  <h2>第一层：pi-ai 只做「统一 provider」这一件事</h2>
+
+<p>它的自我定义写在 README 第一句：统一的 LLM API，带 provider 集合、自动认证解析、token 与成本跟踪，以及简单的上下文持久化与中途换模型的交接。<a class="src" href="https://github.com/earendil-works/pi/blob/ac4ac9eaf69f2b01ca3af984a5c48f3b99b84278/packages/ai/README.md#L3" data-expect="Unified LLM API with provider collections">ai/README.md:3</a></p>
+
+<p>它还有一条<b>显式的收录标准</b>：</p>
+
+<div class="tpl">
+  <div class="tpl-head"><span class="path">packages/ai/README.md</span><span class="lines literal">原文 L5</span></div>
+  <pre><code>**Note**: This library only includes models that support tool calling (function calling),
+as this is essential for agentic workflows.</code></pre>
+  <div class="tpl-foot">一个通用 LLM 库不会这样限定。<b>pi-ai 从一开始就是为 agent 服务的库</b>，不是一个中立的多 provider SDK。<a class="src" href="https://github.com/earendil-works/pi/blob/ac4ac9eaf69f2b01ca3af984a5c48f3b99b84278/packages/ai/README.md#L5" data-expect="only includes models that support tool calling">ai/README.md:5</a></div>
+</div>
+
+<h2>第二层：pi-agent-core 的工具是「抽象工具」</h2>
+
+<p><code>packages/agent</code> 里确实有 <code>bash</code>/<code>read</code>/<code>write</code>/<code>edit</code> 四个工具实现，但它们接受一个注入的执行环境（<code>ExecutionEnv</code>、<code>FileSystem</code>、<code>Shell</code>），而不是直接调 <code>node:fs</code>。<a class="src" href="https://github.com/earendil-works/pi/blob/ac4ac9eaf69f2b01ca3af984a5c48f3b99b84278/packages/agent/src/harness/types.ts#L315" data-expect="export interface ExecutionEnv extends FileSystem, Shell {}">harness/types.ts:315</a></p>
+
+<p>这就是 <a href="ch15.html">第 15 章</a>里 Gondolin 扩展能把工具路由进 micro-VM 的原因：<b>工具逻辑与「在哪执行」是分开的</b>。而 <code>coding-agent</code> 有自己那套 7 个工具（多了 <code>grep</code>/<code>find</code>/<code>ls</code>），面向真实文件系统。</p>
+
+<p>顺带一提，这是全书第二处「同名双份实现」——第一处是压缩（<a href="ch06.html">第 06 章</a>，漂移 d3）。两处的成因相同：harness-v2 迁移期，新旧两套并存。</p>
+
+<h2>第三层：coding-agent 承担全部产品决策</h2>
+
+<div class="tbl-scroll"><table><thead><tr><th>决策</th><th>在哪一层</th><th>本书章节</th></tr></thead><tbody>
+<tr><td>「不做权限系统」</td><td>coding-agent</td><td><a href="ch15.html">15</a></td></tr>
+<tr><td>压缩阈值 = window − 16384</td><td>coding-agent</td><td><a href="ch06.html">06</a></td></tr>
+<tr><td><code>!!cmd</code> 不进上下文</td><td>coding-agent</td><td><a href="ch05.html">05</a></td></tr>
+<tr><td>会话格式 v3</td><td>coding-agent</td><td><a href="ch07.html">07</a></td></tr>
+<tr><td>扩展事件有哪 25 类</td><td>coding-agent</td><td><a href="ch12.html">12</a></td></tr>
+</tbody></table></div>
+
+<p><code>packages/agent</code> 对这些一无所知——它只提供机制。</p>
+
+<h2>核心最小化是写进贡献指南的</h2>
+
+<div class="tpl">
+  <div class="tpl-head"><span class="path">CONTRIBUTING.md</span><span class="lines literal">原文 L9 与 L11（并置）</span></div>
+  <pre><code>If your feature does not belong in the core, it should be an extension.
+PRs that bloat the core will likely be rejected.
+
+Pi's core exists to be minimal and to be extensible so that it can be influenced and
+manipulated by extensions.  Even hook points for extensions however should be well
+considered and discussed to avoid adding unmaintainable bloat and complex interactions.</code></pre>
+  <div class="tpl-foot">第二段那句「即便是给扩展用的 hook point 也要充分考虑和讨论」，解释了 <a href="ch03.html">第 03 章</a>里循环钩子为什么只有五个、且都不改控制流。<a class="src" href="https://github.com/earendil-works/pi/blob/ac4ac9eaf69f2b01ca3af984a5c48f3b99b84278/CONTRIBUTING.md#L11" data-expect="Even hook points for extensions however should be well considered">CONTRIBUTING.md:11</a></div>
+</div>
+
+</section>
+
+<section id="s3">
+  <div class="sec-tag"><span class="cell"></span><span class="lab">§3 Design 设计动机与权衡</span></div>
+  <h2>边界画在哪里，决定了什么能被替换</h2>
+
+<p>把「一轮对话」的概念留在 <code>agent</code> 而不是 <code>ai</code>，意味着<b>换 provider 不影响循环</b>；把「文件系统」留在注入接口而不是硬编码，意味着<b>换执行环境不影响工具逻辑</b>；把「UI」留在 <code>coding-agent</code> 而 <code>tui</code> 零依赖，意味着<b>无头运行不需要 mock UI</b>。</p>
+
+<p>三条边界都遵循同一个判据：<b>一个东西如果可能有第二种实现，就把它做成注入点。</b></p>
+
+<h2>代价：同一个概念在三层各有一份类型</h2>
+
+<p>一条消息在 <code>ai</code> 里是 <code>Message</code>，在 <code>agent</code> 里是 <code>AgentMessage</code>，在 <code>coding-agent</code> 里还有扩展出来的自定义 role。<a href="ch05.html">第 05 章</a>那两道闸就是这个代价的具体形态——<b>每次 LLM 调用都要做一次类型转换</b>。</p>
+
+<p>换来的是每层可以独立演化。<code>coding-agent</code> 加一种消息类型不需要动 <code>ai</code>；<code>ai</code> 加一个 provider 不需要动 <code>agent</code>。</p>
+
+<h2>「核心最小」与「产品层 12 万行」并不矛盾</h2>
+
+<p>容易误读的一点：<code>CONTRIBUTING.md</code> 说核心要最小，但 <code>coding-agent</code> 有 12 万行。这不矛盾——<b>「核心」指的是 <code>packages/agent</code>（2 万行）</b>。产品层大是正常的，因为产品决策就是多。</p>
+
+<p>真正的约束落在别处：<code>coding-agent</code> 里那些「本可以做成扩展」的功能，才是这条规则要拦的。而它给出的出路是扩展系统（<a href="ch12.html">第 12 章</a>）——所以扩展系统的能力边界，直接决定了这条规则可执行到什么程度。</p>
+
+</section>
+
+<section id="s4">
+  <div class="sec-tag"><span class="cell"></span><span class="lab">§4 Limits 边界与失效条件</span></div>
+
+<ul>
+  <li><b>层与层之间存在同名双份实现。</b>compaction（<a href="ch06.html">06</a>）与工具（本章）各有两份。这是迁移期的中间态，但对库使用者是当下的事实：<b>import 的路径决定了你拿到哪一份</b>。</li>
+  <li><b><code>coding-agent</code> 是唯一没有「向上一层」的层。</b>它没有稳定 API 承诺（相对于 <code>ai</code> 与 <code>agent</code> 的公开 npm 包）。想复用它的能力，路径是 SDK 或扩展（<a href="ch14.html">第 14 章</a>），不是直接 import 内部模块。</li>
+  <li><b>分层不阻止产品决策泄漏进下层。</b>例如 <code>agent</code> 里的 <code>DEFAULT_COMPACTION_SETTINGS</code> 已经带上了具体数字（16384 / 20000），那本质上是产品决策。</li>
+</ul>
+
+</section>
+
+<section id="s5">
+  <div class="sec-tag"><span class="cell"></span><span class="lab">§5 Takeaway 拿走什么</span></div>
+
+<ul class="takeaway">
+  <li><b>用「这一层刻意不知道什么」来定义边界，比用「这一层负责什么」更清楚。</b>前者可证伪——你可以 grep 有没有泄漏。
+    <span class="cond">适用条件：任何分层设计。<b>写进 README 后它就成了可检查的约束。</b></span></li>
+  <li><b>可能有第二种实现的东西，做成注入点。</b>pi 把「执行环境」注入到工具里，于是 micro-VM 路由变成一个扩展就能做的事。
+    <span class="cond">适用条件：你能预见第二种实现。<b>为想象中的第二种实现做抽象是过度设计。</b></span></li>
+  <li><b>「核心最小」这条规则只有配上一个够强的扩展系统才可执行。</b>否则被拒的 PR 无处可去，规则会变成「我们不接受贡献」的委婉说法。
+    <span class="cond">适用条件：你打算用这条规则拒 PR。</span></li>
+</ul>
+
+</section>
+
+
+<section id="quiz">
+  <div class="sec-tag"><span class="cell"></span><span class="lab">§ Self-check 自测</span></div>
+  <h2>给场景，判断 pi 会怎么做</h2>
+
+<div class="quiz">
+
+<div class="q" data-answer="b">
+  <p class="qprompt"><span class="qtype">场景</span>模型返回的流式 chunk 解析出错、字段对不上。按三层分工，最先查哪个包？</p>
+  <div class="opts">
+    <button class="opt" type="button" data-ch="a"><code>coding-agent</code>——离用户最近</button>
+    <button class="opt" type="button" data-ch="b"><code>ai</code>——provider 的请求格式与流式差异都在这层抹平</button>
+    <button class="opt" type="button" data-ch="c"><code>agent</code>——循环持有流</button>
+  </div>
+  <details><summary>看答案</summary><div class="answer">
+    <p><b>B。</b>「模型返回格式不对 → <code>ai</code>；工具结果没进上下文 → <code>agent</code>；工具行为不符预期 → <code>coding-agent</code>」——分层的定位价值就在这里。</p>
+  </div></details>
+</div>
+
+<div class="q" data-answer="c">
+  <p class="qprompt"><span class="qtype">场景</span>你想给 pi 加「让模型悄悄重试上一个 turn」的功能。写个扩展能做到吗？</p>
+  <div class="opts">
+    <button class="opt" type="button" data-ch="a">能，用 <code>context</code> 事件改上下文</button>
+    <button class="opt" type="button" data-ch="b">能，用 <code>tool_call</code> 事件拦截</button>
+    <button class="opt" type="button" data-ch="c">不能——扩展能改喂进去什么、要不要继续、结果长什么样，但循环控制流是硬编码的</button>
+  </div>
+  <details><summary>看答案</summary><div class="answer">
+    <p><b>C。</b>循环的五个钩子没有一个能跳过或重排 turn。这是刻意的：<a class="src" href="https://github.com/earendil-works/pi/blob/ac4ac9eaf69f2b01ca3af984a5c48f3b99b84278/CONTRIBUTING.md#L11" data-expect="Even hook points for extensions however should be well considered">CONTRIBUTING.md:11</a></p>
+  </div></details>
+</div>
+
+</div>
+</section>
+
+<div class="next">
+  <a href="ch01.html">← 01 仓库全景</a>
+  <a href="ch03.html">03 agent loop 逐行 →</a>
+</div>
+
+<div class="anchor-foot">
+基于 <a href="https://github.com/earendil-works/pi/tree/ac4ac9eaf69f2b01ca3af984a5c48f3b99b84278">earendil-works/pi @ <code>ac4ac9e</code></a>（2026-08-07 快照）。<br>
+仓库 commit 速度约 428/月，行号引用仅对该 SHA 有效。
+</div>
+
+</div>
+<script src="../assets/quiz.js" defer></script>
+</body>
+</html>
