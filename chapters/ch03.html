@@ -50,6 +50,8 @@
 
 <p>同一条用户消息，进 steering 队列还是 follow-up 队列，决定的不是它「多久被处理」，而是它「会不会打断当前这批工具执行完之后的收尾判断」。这个区别在 UI 上通常表现为：跑着的时候敲回车是 steering，跑完之前敲回车是 follow-up。</p>
 
+<p>「大部分 agent 实现只有一层循环」不是本书为了对照而虚构的靶子。锚定 SHA 之后 13 天，pi 的开发方发表了一篇面向普通读者的解释文章 <a href="https://earendil.com/posts/what-is-a-harness/">Earendil《What is a Harness?》（2026-08-20）</a>；它讲 agentic loop 的那一节，循环的出口就落在模型自己的判断上——搜完资料、写完表格、发完邮件，「The model reviews this final work and decides the job is done.」——之后并没有「再回头问一句还有没有排队的活」这一层。那是通用 harness 的入门解释，不是 pi 的架构说明，在那个语境下省略这一层完全合理；本章的价值恰恰在于把它补回来。（此处只用作「上游对外怎么讲」的证据，不构成对代码行为的断言。）</p>
+
 </section>
 
 <section id="s2">

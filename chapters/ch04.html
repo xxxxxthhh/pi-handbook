@@ -136,6 +136,22 @@ for (const finalized of orderedFinalizedCalls) {          <span class="cm bone">
 
 <p>边界在于：<b>这也意味着没有任何一类工具错误会让 run 停下来</b>。一个每次都失败的工具，模型可以反复调用它直到上下文耗尽。停机责任完全在模型和上层（见 <a href="ch03.html">第 03 章</a> §4）。</p>
 
+<h2>上游公开谈过工具——谈的是「选择」那一半</h2>
+
+<p><a href="https://earendil.com/posts/what-is-a-harness/">Earendil《What is a Harness?》（2026-08-20）</a>——发布于本书锚定 SHA 之后 13 天——给出一条工具通则：「Critically, the harness usually does not dictate when and how the AI model should use the tool.」harness <b>通常</b>不规定模型何时、如何使用工具，只把它们提供出来、描述清楚，交给模型自己判断。</p>
+
+<p>这条通则在它自己的抽象层级上是准确的，pi 的代码也印证了它的核心：preflight 第一步查表时，键就是模型写下的那个 <code>name</code>。<a class="src" href="https://github.com/earendil-works/pi/blob/ac4ac9eaf69f2b01ca3af984a5c48f3b99b84278/packages/agent/src/agent-loop.ts#L607" data-expect="const tool = currentContext.tools?.find((t) =&gt; t.name === toolCall.name);">agent-loop.ts:607</a> 工具集由 harness 给定，选哪一个由模型的输出决定。本章的贡献是指出它下面还有一层——按 pi 的实现收窄，更准确的说法是：<b>选择权归模型，执行权几乎全归 harness</b>。模型写下一批 tool call 之后，对接下来发生的事几乎没有发言权：</p>
+
+<ul>
+  <li>这批是并发跑还是一个接一个跑，由 harness 在<b>批次级</b>裁定；判定只读 <code>config</code> 与工具自带的 <code>executionMode</code>，模型无从表达偏好。<a class="src" href="https://github.com/earendil-works/pi/blob/ac4ac9eaf69f2b01ca3af984a5c48f3b99b84278/packages/agent/src/agent-loop.ts#L422" data-expect="if (config.toolExecution === &quot;sequential&quot; || hasSequentialToolCall) {">agent-loop.ts:422</a></li>
+  <li>某一次调用会不会真的执行，<code>beforeToolCall</code> 能在执行前否掉，模型只拿到一句 <code>reason</code>。<a class="src" href="https://github.com/earendil-works/pi/blob/ac4ac9eaf69f2b01ca3af984a5c48f3b99b84278/packages/agent/src/agent-loop.ts#L636" data-expect="if (beforeResult?.block) {">agent-loop.ts:636</a></li>
+  <li>工具返回的内容也未必是模型看到的内容——<code>afterToolCall</code> 逐字段改写结果，可改的包括 <code>content</code> 与 <code>terminate</code>。<a class="src" href="https://github.com/earendil-works/pi/blob/ac4ac9eaf69f2b01ca3af984a5c48f3b99b84278/packages/agent/src/agent-loop.ts#L724" data-expect="if (config.afterToolCall) {">agent-loop.ts:724–751</a></li>
+</ul>
+
+<p>这个区分决定了工具层的工作量估算落在哪里。照通则去理解，工具层像一件文档工作：schema 写对、描述写清楚，模型自会用好。而本章读到的代码说明，<b>工具层真正的复杂度是在模型做完决定之后才开始的</b>——顺序保证、拦截时机、错误回灌、事件与消息的两套顺序，这几件事没有一件能靠把工具描述写得更清楚来解决。</p>
+
+<p>这不是疏漏，而是抽象层级的选择：科普不是规格说明。也正因如此，本书只把它当作<b>上游意图</b>的证据，不当作代码行为的证据。本章前面对批次级串行判定所标的「未见公开论述」不受影响——文章没有触及执行侧的任何决定。</p>
+
 </section>
 
 <section id="s4">

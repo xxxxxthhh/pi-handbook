@@ -150,6 +150,14 @@
 
 <p>把兼容承诺压缩到一条，重写的自由度就最大化了。这个选择的前提是<b>用户数据只有一类值得保</b>（历史会话），其余（内部 API、SQLite schema、record 格式）都还没有外部依赖者——对一个一岁的项目成立，对一个五岁的项目多半不成立。</p>
 
+<h2>上游自己怎么说：会话是用户的资产</h2>
+
+<p>上面三小节的理由全是从代码和 <code>harness-v2.md</code> 这份<b>内部工程文档</b>反推的，「上游公开说过什么」这一格一直空着。锚定 SHA 之后 <b>13 天</b>，Earendil 发了立场文 <a href="https://earendil.com/posts/what-is-a-harness/">《What is a Harness?》（2026-08-20）</a>：用户能在自己机器上跑自己的 harness，就保住了把工具变成自己的自由，以及 "keep local copies of the sessions that over time will constitute their correspondence with machines"。<b>这是立场文，不是代码也不是仓库文档</b>——它只能证明上游怎么讲自己的产品，证明不了任何一行代码为什么这么写。</p>
+
+<p>它补上的坐标是：会话在上游叙事里是<b>用户侧的通信录</b>，不是厂商侧的用量日志。对得上的实现有两处——会话按 cwd 编码落在用户自己盘上的 <code>~/.pi/agent/sessions/</code> 下 <a class="src" href="https://github.com/earendil-works/pi/blob/ac4ac9eaf69f2b01ca3af984a5c48f3b99b84278/packages/coding-agent/src/core/session-manager.ts#L474" data-expect="Encodes cwd into a safe directory name under ~/.pi/agent/sessions/.">session-manager.ts:474</a>，文件是只追加的明文 JSONL 树 <a class="src" href="https://github.com/earendil-works/pi/blob/ac4ac9eaf69f2b01ca3af984a5c48f3b99b84278/packages/coding-agent/src/core/session-manager.ts#L845" data-expect="Manages conversation sessions as append-only trees stored in JSONL files.">session-manager.ts:845</a>。跳回旧分支、拿别的工具翻历史，都不经过服务端。</p>
+
+<p><b>一致不等于因果，而且这两处的一致程度并不一样。</b>「留在本机」是接口层面的：§2 那三个后端（内存 / JSONL / SQLite）都落在本机。「明文可读」只是当前默认后端的性质，不是契约——同一套一致性测试判定 SQLite 后端同样合格，而 SQLite 文件不是明文。换句话说：CLI 默认后端哪天换成 SQLite，存储契约一个字不用改，而「用 <code>grep</code> 读自己的会话」就没了。被锁死的是<b>本地</b>，不是<b>可读</b>。追加日志这个形状，本节开头已有更直接的解释（崩溃只丢最后一行、写入 O(1)、树免费），它们不需要产品意图也成立，不能倒过来算成意图的产物。</p>
+
 </section>
 
 <section id="s4">

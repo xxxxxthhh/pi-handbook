@@ -101,6 +101,8 @@ export const ANTHROPIC_MODELS: ModelCatalog&lt;typeof values, "anthropic"&gt; =
 
 <p>这个判断是否值 5.8 万行，取决于你要支持几家。支持 2 家不值，支持 39 家大概值。</p>
 
+<p>上游讲这条理由，是在仓库之外：<a href="https://earendil.com/posts/what-is-a-harness/">Earendil《What is a Harness?》（2026-08-20）</a>，比 <code>ac4ac9e</code> 晚 13 天。文中的理由是用户侧的选择权，直说是为了 “take power and leverage away from the AI labs and into the hands of end users”。</p>
+
 </section>
 
 <section id="s4">
@@ -110,8 +112,14 @@ export const ANTHROPIC_MODELS: ModelCatalog&lt;typeof values, "anthropic"&gt; =
   <li><b>「39 个 provider」是按 <code>*.models.ts</code> 文件数统计的</b>，其中若干是同一家的不同接入方式（如 <code>openai</code> / <code>openai-codex</code> / <code>azure-openai-responses</code>），也包含若干区域变体（<code>minimax</code> / <code>minimax-cn</code>）。真实的「厂商数」小于 39。</li>
   <li><b>构建可复现性依赖发布归档。</b>直接从 git checkout 构建，产物与官方发布不保证一致。</li>
   <li><b>模型能力矩阵的正确性取决于上游目录。</b>上游标错了窗口大小，pi 就跟着错，而 <a href="ch06.html">第 06 章</a>的压缩阈值直接依赖这个数字。</li>
+  <li><b>官方叙事略过了账单。</b>立场文讲用户拿到什么——换个模型再问一次；代码讲这份自由由谁买单：正因为各家在工具调用、流式、thinking 级别上语义不一致，「朴素地换模型」才不成立，才需要 5.8 万行逐家抹平；而模型清单不入库、构建时刷新（§2），说明被抹平的这一面每周都在动。两笔账不同源，但同指一件事——<b>translation layer 在文章里是一项功能，在代码里是一份按周续费的订阅。</b></li>
+  <li><b>抹平速度跟不上时，先失效的是叙事那一侧。</b>当某家 provider 的语义变化快过 5.8 万行的跟进速度，官方讲的「换个模型再问一次」会退化成「换个模型，然后发现工具调用行为变了」——立场文说的是这个设计<b>为谁而做</b>，代码说的是它<b>要多少钱维持</b>，两者并不互相担保。</li>
   <li><b>不收录不支持 tool calling 的模型</b>是设计选择而非疏漏。想用纯对话模型跑 pi，路径是自定义 provider（<code>docs/custom-provider.md</code>），不是等它被收录。</li>
 </ul>
+
+<div class="callout no">
+  <p><b>这条证据的级别与本书其余部分不同。</b>《What is a Harness?》是第一方立场文，能证明的只有<b>「上游对外这么讲」</b>，不能证明<b>「代码这么跑」</b>——它不是代码，也不是仓库文档，没有行号，也不该有。本条同样不进<a href="../drift.html">漂移记录</a>：那里收的是同一 SHA 内「文档 vs 代码」的双向举证，这里有一侧根本不在仓库里。</p>
+</div>
 
 </section>
 
@@ -125,6 +133,8 @@ export const ANTHROPIC_MODELS: ModelCatalog&lt;typeof values, "anthropic"&gt; =
     <span class="cond">适用条件：支持两种以上认证方式。</span></li>
   <li><b>在每次请求时重新解析认证，而不是在客户端构造时固定。</b>OAuth token 会在长任务中途过期。
     <span class="cond">适用条件：支持 OAuth 或任何有效期凭证。<b>纯 API key 场景固定下来更简单。</b></span></li>
+  <li><b>把「支持 N 家 provider」当成按周续费的订阅，不是一次性工程。</b>抹平语义差异靠人力跟进，模型元数据靠构建时刷新——两笔都不会自己停。
+    <span class="cond">适用条件：你打算对外承诺「随时可换模型」。<b>承诺之前先定下谁来跟进上游变化：宣传里的自由，代码里是有人按周在付的成本。</b></span></li>
 </ul>
 
 </section>
