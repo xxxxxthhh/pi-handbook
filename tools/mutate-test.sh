@@ -7,7 +7,7 @@ set -uo pipefail
 
 cd "$(dirname "$0")/.."
 
-FILES=(chapters/ch03.html chapters/ch04.html chapters/ch08.html data/status.json data/drift.json)
+FILES=(chapters/ch03.html chapters/ch04.html chapters/ch07.html chapters/ch08.html data/status.json data/drift.json)
 TMP="$(mktemp -d)"
 for f in "${FILES[@]}"; do mkdir -p "$TMP/$(dirname "$f")"; cp "$f" "$TMP/$f"; done
 restore() { for f in "${FILES[@]}"; do cp "$TMP/$f" "$f"; done; rm -rf "$TMP"; }
@@ -57,6 +57,11 @@ echo
 echo "GATE 3 · 漂移双向举证"
 expect_red "drift 条目缺 code_side"      data/drift.json    's|"code_side"|"code_side_REMOVED"|'
 expect_red "drift 证据行号漂移"          data/drift.json    's|"line": 136|"line": 140|'
+
+echo
+echo "GATE 1c · 第一方表述的发表间隔"
+expect_red "手写天数与日期不符（13 → 14）"   chapters/ch04.html 's|锚定 SHA 之后 13 天|锚定 SHA 之后 14 天|'
+expect_red "发表日期被改（08-20 → 08-21）"   chapters/ch07.html 's|（2026-08-20）|（2026-08-21）|'
 
 echo
 echo "GATE 4 · 内部死链（--release）"

@@ -22,6 +22,7 @@
  *   GATE 3 漂移双向举证 —— data/drift.json 每条：
  *     · doc_side 与 code_side 都存在，且各自的 path:line:expect 可解析
  *
+ *   GATE 1c 第一方表述的发表间隔 —— 「锚定 SHA 之后 N 天」必须等于同段发表日期 − snapshot_date
  *   GATE 4 内部死链 —— HTML 中所有相对 href 指向的本地文件必须存在
  *
  * data-expect / expect 是唯一能挡住「行号漂移」的检查，因此一律必填。
@@ -51,13 +52,23 @@ const HREF_RE = /\shref="(?!https?:|mailto:|#)([^"]+)"/g;
 
 const STATUS_TEXT = { shipped: "已发布", partial: "部分落地", paper: "仅设计文档" };
 
+// GATE 1c：第一方公开表述（裸 href）写「锚定 SHA 之后 N 天 / 比 <sha> 晚 N 天」时，
+// N 必须等于该段里写明的发表日期减去 stats.json 的 snapshot_date。手写天数在锚定 SHA
+// 变更时会四处同时失效，这里把它变成可推导的不变量。
+const SNAPSHOT_DATE = existsSync(statsPath)
+	? JSON.parse(readFileSync(statsPath, "utf8")).snapshot_date
+	: undefined;
+const GAP_RE = /(?:锚定 SHA 之后|晚)\s*(?:<b>)?\s*(\d+)\s*(?:<\/b>)?\s*天/g;
+const DATE_IN_PAREN_RE = /[（(](\d{4}-\d{2}-\d{2})[）)]/;
+const dayDiff = (a, b) => Math.round((Date.parse(a) - Date.parse(b)) / 86400000);
+
 // 建设期章节尚未全部产出，交叉引用必然暂时打不开。死链默认降级为 warning，
 // 发布前用 --release 提升为 error（CLAUDE.md 校验器 #4 的横切检查）。
 const RELEASE = process.argv.includes("--release");
 
 const errors = [];
 const warnings = [];
-const counts = { citations: 0, upstream: 0, status: 0, drift: 0, links: 0 };
+const counts = { citations: 0, upstream: 0, status: 0, drift: 0, links: 0, gaps: 0 };
 
 const fileCache = new Map();
 function linesAt(path, sha = PINNED) {
@@ -193,6 +204,18 @@ for (const file of htmlFiles(BOOK)) {
 			verifyAnchor(`status.json/${chapter}`, ev.path, ev.line, ev.expect);
 	}
 
+	// GATE 1c
+	for (const block of html.split(/<\/(?:p|li)>/)) {
+		for (const g of block.matchAll(GAP_RE)) {
+			counts.gaps++;
+			const d = block.match(DATE_IN_PAREN_RE);
+			if (!SNAPSHOT_DATE) errors.push(`${rel}: stats.json 缺 snapshot_date —— GATE 1c 无法执行`);
+			else if (!d) errors.push(`${rel}: 写了「${g[1]} 天」但同一段没有 （YYYY-MM-DD） 发表日期可供推导`);
+			else if (dayDiff(d[1], SNAPSHOT_DATE) !== Number(g[1]))
+				errors.push(`${rel}: 「${g[1]} 天」与 ${d[1]} − 锚定日 ${SNAPSHOT_DATE} = ${dayDiff(d[1], SNAPSHOT_DATE)} 天不符`);
+		}
+	}
+
 	// GATE 4
 	for (const m of html.matchAll(HREF_RE)) {
 		counts.links++;
@@ -272,5 +295,5 @@ if (errors.length > 0) {
 }
 console.log(
 	`✓ 站级校验通过 @ ${PINNED.slice(0, 7)}${RELEASE ? "（release 模式）" : ""}\n` +
-		`  引用 ${counts.citations} 条 · 追记引用 ${counts.upstream} 条 @${(UPSTREAM ?? "").slice(0, 7)} · 状态徽章 ${counts.status} 个 · 自测 ${counts.quiz ?? 0} 道 · 漂移 ${counts.drift} 条 · 内部链接 ${counts.links} 个`,
+		`  引用 ${counts.citations} 条 · 追记引用 ${counts.upstream} 条 @${(UPSTREAM ?? "").slice(0, 7)} · 状态徽章 ${counts.status} 个 · 自测 ${counts.quiz ?? 0} 道 · 漂移 ${counts.drift} 条 · 发表间隔 ${counts.gaps} 处 · 内部链接 ${counts.links} 个`,
 );
