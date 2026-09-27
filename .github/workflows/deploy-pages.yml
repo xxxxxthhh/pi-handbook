@@ -41,6 +41,13 @@ jobs:
           git -C repo checkout --detach FETCH_HEAD
           test "$(git -C repo rev-parse HEAD)" = "$PI_SHA"
 
+      - name: 获取「锚点之后」追记所核对的上游版本（浅，只取对象，不移动锚定检出）
+        run: |
+          UP_SHA=$(node -e "console.log(require('./data/stats.json').after_anchor.upstream_sha)")
+          git -C repo fetch --depth 1 origin "$UP_SHA"
+          git -C repo cat-file -e "$UP_SHA^{commit}"
+          test "$(git -C repo rev-parse HEAD)" = "$PI_SHA"
+
       - name: GATE 1–4 · 引用 / 状态 / 漂移 / 死链（release 模式）
         run: node tools/check-citations.mjs --release
 
