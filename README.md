@@ -26,11 +26,11 @@ python3 -m http.server 8899   # 然后打开 http://localhost:8899
 
 | 在哪里看到 | 数的是什么 | 由谁算 |
 |---|---|---|
-| 首页、`sources.html`、主页卡片（如 154） | **去重后的 `path:line` 落点**：同一行被多章引用只算一次 | `tools/gen-aux.mjs` 的 `totalRefs` |
-| `check-citations.mjs` 输出的「引用 N 条」（如 208） | **页面上每一个 `<a class="src">`**：重复引用逐个计数，是门禁实际核对的条数 | `tools/check-citations.mjs` |
+| 首页、`sources.html`、主页卡片（如 156） | **去重后的 `path:line` 落点**：同一行被多章引用只算一次 | `tools/gen-aux.mjs` 的 `totalRefs` |
+| `check-citations.mjs` 输出的「引用 N 条」（如 214） | **页面上每一个 `<a class="src">`**：重复引用逐个计数，是门禁实际核对的条数 | `tools/check-citations.mjs` |
 | 「追记引用 N 条」 | 锚点之后追记里的 `<a class="src-up">`，指向上游追记提交，**不计入上面两项** | `tools/check-citations.mjs` GATE 1b |
 
-本地未发布分支 `harness-post-integration` 上的门禁计数（如 214）包含该分支新增的引用，与线上 `main` 不同。
+第一方公开表述（如上游立场文）用裸链接，不计入以上任何一项；三级证据的写法见 `CLAUDE.md`「硬性约定」。
 
 ## 构建
 
