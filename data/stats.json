@@ -41,5 +41,27 @@
   ],
   "book": {
     "chapters": 21
+  },
+  "after_anchor": {
+    "upstream_sha": "2b0a123de98318c2ff8069661721ce0c3794c34e",
+    "upstream_sha_short": "2b0a123",
+    "upstream_date": "2026-09-26",
+    "commits_after_anchor": 983,
+    "harness_v2_md_present": 0,
+    "harness_md_lines": 1468,
+    "anchor_unavailable_methods": {
+      "implemented": 17,
+      "removed": 4,
+      "stubbed": 1,
+      "removed_names": ["peekAction", "executeAction", "runToCompletion", "createLane"],
+      "stubbed_names": ["watchSession"]
+    },
+    "commits": {
+      "harness_v2_merged": {"sha": "85a206081", "date": "2026-08-11"},
+      "unavailable_removed": {"sha": "5aeb06bb1", "date": "2026-08-11"},
+      "experimental_added": {"sha": "33dac3623", "date": "2026-08-16"}
+    },
+    "default_cli_new_agent_line": 380,
+    "experimental_dir_at_anchor": 0
   }
 }

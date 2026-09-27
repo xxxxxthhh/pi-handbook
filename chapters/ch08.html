@@ -39,6 +39,7 @@
   <h2>先记住这一句</h2>
 
 <div class="oneliner"><b>Harness v2 不是「pi 的架构」，是「pi 正在长成的架构」。存储底座已经完工并通过三后端一致性测试；执行器是一个<em>刻意做成会抛错的</em>空壳。中间隔着 30 个还没做完的工作包。</b></div>
+<div class="callout after"><p><span class="after-tag">锚点之后</span>本章的判定锚定在 <code>ac4ac9e</code>（2026-08-07），在那个版本上依然成立。上游在那之后已经实现了执行器的大部分方法，但默认 CLI 没有切换过去——「执行器是空壳」不再是上游的现状。本书没有换锚点，变化见本章末尾的 <a href="#after-anchor">追记</a>。</p></div>
 
 <p>这是全书最容易被误读的一章，也是本书存在的主要理由。上游有一份 3437 行的设计文档，写得极其详尽——lanes、records、checkpoints、race catalog、drive modes。任何人读完都会以为那就是 pi 的样子。<b>但读者在自己机器上跑的 pi，走的是 <a href="ch03.html">第 03 章</a> 那个循环。</b></p>
 
@@ -174,6 +175,21 @@ packages/coding-agent/src/core/sdk.ts:294:  agent = new Agent({           <span 
     <span class="cond">pi 没这么做，用「reserve 提交单独落 main」缓解了冲突——<b>代价是每次认领都要一次往返 main 的提交。</b></span></li>
 </ul>
 
+</section>
+
+<section id="after-anchor">
+  <div class="sec-tag"><span class="cell"></span><span class="lab">Postscript @2b0a123</span></div>
+  <h2>追记：锚点之后，上游改了什么</h2>
+
+<p>这一节引用的是上游提交 <code>2b0a123</code>（2026-09-26），不是全书的锚定版本；带 <code>@后</code> 标记的引用同样由校验器逐行核对。<b>本章前面的判定一字未改</b>：它们描述的是 <code>ac4ac9e</code> 上的代码，在那个版本上仍然成立。</p>
+
+<p><b>设计文档合并了。</b><code>harness-v2.md</code> 于 2026-08-11 并入 <code>harness.md</code>，工作包也重新编号。新规范自述前几个工作包已经完成：<a class="src-up" href="https://github.com/earendil-works/pi/blob/2b0a123de98318c2ff8069661721ce0c3794c34e/packages/agent/docs/harness.md#L143" data-expect="WP00–WP07 are complete">harness.md:143</a>。</p>
+
+<p><b>执行器不再是空壳。</b>锚点上经 <code>unavailable()</code> 抛错的方法，现在大多在 <code>runtime/</code> 里有了实现，例如 <a class="src-up" href="https://github.com/earendil-works/pi/blob/2b0a123de98318c2ff8069661721ce0c3794c34e/packages/agent/src/harness/runtime/lane.ts#L1133" data-expect="async prompt(">lane.ts:1133</a>、<a class="src-up" href="https://github.com/earendil-works/pi/blob/2b0a123de98318c2ff8069661721ce0c3794c34e/packages/agent/src/harness/runtime/lane.ts#L1200" data-expect="async compact(">lane.ts:1200</a>、<a class="src-up" href="https://github.com/earendil-works/pi/blob/2b0a123de98318c2ff8069661721ce0c3794c34e/packages/agent/src/harness/runtime/lane.ts#L1327" data-expect="async resume(">lane.ts:1327</a>；<code>peekAction</code>、<code>executeAction</code>、<code>runToCompletion</code>、<code>createLane</code> 被删掉了。唯一仍然抛错的是 <code>watchSession</code>：<a class="src-up" href="https://github.com/earendil-works/pi/blob/2b0a123de98318c2ff8069661721ce0c3794c34e/packages/agent/src/harness/runtime/harness.ts#L306" data-expect="throw new SliceNotImplemented(&quot;watchSession&quot;)">harness.ts:306</a>，规范也这么写：<a class="src-up" href="https://github.com/earendil-works/pi/blob/2b0a123de98318c2ff8069661721ce0c3794c34e/packages/agent/docs/harness.md#L147" data-expect="the sole stubbed Harness method">harness.md:147</a>。确切计数由脚本从上游提交推导，见 <a href="../drift.html#after-anchor">漂移记录 · 上游后续</a>。</p>
+
+<p><b>但默认路径没变。</b>默认 CLI 的会话仍然由 <code>sdk.ts</code> 构造 <code>new Agent</code>：<a class="src-up" href="https://github.com/earendil-works/pi/blob/2b0a123de98318c2ff8069661721ce0c3794c34e/packages/coding-agent/src/core/sdk.ts#L380" data-expect="new Agent(">sdk.ts:380</a>（锚点时是 <code>sdk.ts:294</code>）。durable harness 的调用方在 <code>coding-agent/src/experimental/</code> 下，例如 <a class="src-up" href="https://github.com/earendil-works/pi/blob/2b0a123de98318c2ff8069661721ce0c3794c34e/packages/coding-agent/src/experimental/session-worker.ts#L834" data-expect="await AgentHarness.create(">session-worker.ts:834</a>；这个目录在锚点时还不存在。本书没有核实普通用户默认能不能用到这个入口。</p>
+
+<p>所以判定二要这样读：<b>在 <code>ac4ac9e</code> 上，执行器是刻意的空壳；到 <code>2b0a123</code>，它大部分已经实现，只是默认产品路径还没有切换过去。</b>判定一「跑着的不是它」对默认 CLI 依然成立。</p>
 </section>
 
 <section id="quiz">

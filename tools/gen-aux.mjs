@@ -24,6 +24,16 @@ const stats = JSON.parse(readFileSync(join(BOOK, "data", "stats.json"), "utf8"))
 const drift = JSON.parse(readFileSync(join(BOOK, "data", "drift.json"), "utf8"));
 const status = JSON.parse(readFileSync(join(BOOK, "data", "status.json"), "utf8"));
 
+// ------------------------------------------------------------ 锚点之后的追记
+// 数字与提交全部来自 stats.json 的 after_anchor（tools/stats.sh 从上游提交程序化推导）。
+const UP = stats.after_anchor;
+const upBlob = (path, line, expect, label) =>
+	`<a class="src-up" href="https://github.com/earendil-works/pi/blob/${UP.upstream_sha}/${path}#L${line}" data-expect="${esc(expect)}">${label ?? path.split("/").pop()}:${line}</a>`;
+const upCommit = (c) =>
+	`<a href="https://github.com/earendil-works/pi/commit/${c.sha}"><code>${c.sha.slice(0, 7)}</code></a>（${c.date}）`;
+const M = UP.anchor_unavailable_methods;
+const afterAnchorSummary = (ch08Href) => `<p><span class="after-tag">锚点之后</span><b>上游已经往前走了，本书没有换锚点。</b>截至 <code>${UP.upstream_sha_short}</code>（${UP.upstream_date}，锚点之后 ${UP.commits_after_anchor} 个提交），锚点上那 ${stats.harness_v2.unimplemented_methods} 个抛错方法里 <b>${M.implemented} 个已有实现、${M.removed} 个被删除、${M.stubbed} 个仍是桩</b>（<code>${M.stubbed_names.join("</code>、<code>")}</code>）${UP.harness_v2_md_present ? "" : `；设计文档 <code>harness-v2.md</code> 已并入 <code>harness.md</code>（${UP.harness_md_lines} 行）`}。但 <b>默认 CLI 仍然走 <code>new Agent</code></b>，durable harness 只在锚点之后新增的 experimental worker 里被调用。所以：书里的判定在锚点版本上依然成立，而「执行器是空壳」已经不是上游的现状——大部分已实现，默认路径尚未切换。逐条变化见 <a href="${ch08Href}">第 08 章追记</a> 与 <a href="${ch08Href.startsWith("chapters") ? "" : "../"}drift.html#after-anchor">漂移记录 · 上游后续</a>。</p>`;
+
 const esc = (s) =>
 	String(s).replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;");
 
@@ -171,6 +181,18 @@ writeFileSync(
   <p><b>这 ${drift.entries.length} 条不是系统性扫描的结果</b>，是写作 21 章过程中的顺手发现。一次针对 ${stats.docs.markdown_lines} 行 markdown 的完整核对必然会找出更多。把本页当作「这类问题存在」的证据，不是「问题只有这些」的清单。</p>
 </div>
 ${dHtml}
+
+<section id="after-anchor">
+  <h2>上游后续（锚点之后）</h2>
+  <div class="callout after">${afterAnchorSummary("chapters/ch08.html#after-anchor")}</div>
+  <p>下面是追记的证据。和上面的漂移条目不同，它们引用的是上游提交 <code>${UP.upstream_sha_short}</code>，不是锚定 SHA；同样由 <code>tools/check-citations.mjs</code> 的 GATE 1b 逐行核对。</p>
+  <ul>
+    <li><b>设计文档换了名字。</b>书中反复引用的 <code>packages/agent/docs/harness-v2.md</code> 在上游 main 上已经不存在：${upCommit(UP.commits.harness_v2_merged)} 把它并进了 <code>harness.md</code>。书里指向它的链接都锚定在 <code>${stats.sha_short}</code>，仍然能打开；在上游 main 上找这个文件会找不到。新规范自述的完成度：${upBlob("packages/agent/docs/harness.md", 143, "WP00–WP07 are complete")}，唯一的桩：${upBlob("packages/agent/docs/harness.md", 147, "the sole stubbed Harness method")}。</li>
+    <li><b><code>unavailable()</code> 桩被清空。</b>${upCommit(UP.commits.unavailable_removed)} 之后，<code>agent-harness.ts</code> 里不再有 <code>return this.unavailable(</code>；执行逻辑移到 <code>runtime/</code>，例如 ${upBlob("packages/agent/src/harness/runtime/lane.ts", 1133, "async prompt(")}、${upBlob("packages/agent/src/harness/runtime/lane.ts", 1327, "async resume(")}、${upBlob("packages/agent/src/harness/runtime/harness.ts", 80, "async lane(")}。被删除的 ${M.removed} 个：<code>${M.removed_names.join("</code>、<code>")}</code>。仍抛错的：${upBlob("packages/agent/src/harness/runtime/harness.ts", 306, 'throw new SliceNotImplemented("watchSession")')}。</li>
+    <li><b>默认路径没变。</b>默认 CLI 的会话仍由 <code>sdk.ts</code> 构造 <code>new Agent</code>：${upBlob("packages/coding-agent/src/core/sdk.ts", UP.default_cli_new_agent_line, "new Agent(")}（锚点时在第 294 行）。durable harness 的调用方在 <code>coding-agent/src/experimental/</code>，这个目录在锚点时不存在，由 ${upCommit(UP.commits.experimental_added)} 新增：${upBlob("packages/coding-agent/src/experimental/session-worker.ts", 834, "await AgentHarness.create(")}。本书没有核实普通用户默认能否用到这个入口。</li>
+  </ul>
+  <p>完整重锚需要逐行重核全书 ${totalRefs} 处引用（按 <code>path:line</code> 去重），工作量接近重写 ch07 / ch08 / ch19 / ch20，而上游 harness 仍在快速变化，所以本书选择只追记、不换锚点。刷新追记：改 <code>tools/stats.sh</code> 里的 <code>UPSTREAM</code>，再跑 <code>tools/build.sh</code>。</p>
+</section>
 ` +
 		foot(),
 );
@@ -284,6 +306,8 @@ writeFileSync(
   <p><b>全书最重要的一个发现</b>：上游那份 ${stats.docs.harness_v2_lines} 行的 durable harness 设计文档所描述的执行器，在锚定版本上有 <b>${stats.harness_v2.unimplemented_methods} 个方法直接抛错</b>，且没有任何生产代码路径构造它——真正在跑的是另一个循环。判定过程见 <a href="chapters/ch08.html">第 08 章</a>。</p>
   <p>第一次读请从 <a href="chapters/ch00.html">导读</a> 开始：它写明了实现状态徽章怎么读、怎么核对本书、以及<b>不覆盖什么</b>。只有 20 分钟 → 直接看 <a href="chapters/ch20.html">第 20 章</a>。</p>
 </div>
+
+<div class="callout after">${afterAnchorSummary("chapters/ch08.html#after-anchor")}</div>
 
 ${toc}
 <div class="part">

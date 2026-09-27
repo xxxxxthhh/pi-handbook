@@ -39,6 +39,8 @@
   <p>第一次读请从 <a href="chapters/ch00.html">导读</a> 开始：它写明了实现状态徽章怎么读、怎么核对本书、以及<b>不覆盖什么</b>。只有 20 分钟 → 直接看 <a href="chapters/ch20.html">第 20 章</a>。</p>
 </div>
 
+<div class="callout after"><p><span class="after-tag">锚点之后</span><b>上游已经往前走了，本书没有换锚点。</b>截至 <code>2b0a123</code>（2026-09-26，锚点之后 983 个提交），锚点上那 22 个抛错方法里 <b>17 个已有实现、4 个被删除、1 个仍是桩</b>（<code>watchSession</code>）；设计文档 <code>harness-v2.md</code> 已并入 <code>harness.md</code>（1468 行）。但 <b>默认 CLI 仍然走 <code>new Agent</code></b>，durable harness 只在锚点之后新增的 experimental worker 里被调用。所以：书里的判定在锚点版本上依然成立，而「执行器是空壳」已经不是上游的现状——大部分已实现，默认路径尚未切换。逐条变化见 <a href="chapters/ch08.html#after-anchor">第 08 章追记</a> 与 <a href="drift.html#after-anchor">漂移记录 · 上游后续</a>。</p></div>
+
 <div class="part">
   <div class="part-head"><span class="no">开始之前</span><h2>导读</h2><span class="tag">先读这一章</span></div>
   <ul class="toc">

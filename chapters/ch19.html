@@ -169,6 +169,7 @@ f909da2bf docs(agent): reserve harness R0 work package</code></pre>
   <li><b>不可移植到没有单一权威的项目。</b>「设计不成立就去 Discord 找 Mario」——这套协议的争议解决机制是<b>一个具名的人</b>。没有这样一个人的项目照抄不了。</li>
   <li><b>规格文件的 git 历史被进度更新稀释。</b>想追溯「这个设计决定是什么时候改的、为什么」，要在几十次 reserve/unreserve 提交里翻找。</li>
 </ul>
+<div class="callout after"><p><span class="after-tag">锚点之后</span>本章描述的是锚点 <code>ac4ac9e</code> 上的 <code>harness-v2.md</code>。上游已于 2026-08-11 把它并入 <code>harness.md</code>，工作包重新编号，前几个包自述已完成；新规范里没有找到本章讲的「Reserved by」认领记录，协议是否迁到了别处，本书没有核实。见 <a href="ch08.html#after-anchor">第 08 章追记</a>。</p></div>
 
 <p><b>检查过并确认</b>：8 次 reserve/unreserve 提交中有 2 次是 <code>unreserve</code>，说明放弃路径被真实使用过；且 <code>unreserve R2</code>（<code>ea7bfdc08</code>）与后来的 <code>reserve harness v2 R3</code>（<code>69bab864d</code>）分属不同工作包，不构成同一包的反复占用。</p>
 

@@ -290,6 +290,14 @@ a.src{font-family:var(--mono);font-size:12px;color:var(--ink-soft);text-decorati
 a.src:hover{color:var(--accent);border-bottom-color:var(--accent)}
 a.src::before{content:'↪ '}
 .srcline{font-family:var(--mono);font-size:12px;color:var(--ink-soft);margin:-8px 0 18px}
+/* 锚点之后的追记：引用的是上游另一个提交（stats.json after_anchor.upstream_sha），用虚线区分 */
+a.src-up{font-family:var(--mono);font-size:12px;color:var(--ink-soft);text-decoration:none;
+  border-bottom:1px dashed var(--warn);white-space:nowrap}
+a.src-up:hover{color:var(--warn)}
+a.src-up::before{content:'↪ @后 '}
+.callout.after{border-left-color:var(--warn);border-left-style:dashed}
+.callout.after .after-tag{display:inline-block;font-family:var(--mono);font-size:11.5px;color:var(--warn);
+  border:1px solid var(--warn);border-radius:4px;padding:0 6px;margin-right:6px;vertical-align:1px}
 
 /* ---------- 代码摘录 ---------- */
 /* 复用 .tpl 骨架，但头部左侧放文件路径、右侧放行号区间 */
@@ -373,6 +381,9 @@ ul.takeaway .cond b{color:var(--warn);font-weight:500}
   a.src{border-bottom:none;color:#4A5A68}
   a.src::before{content:'['}
   a.src::after{content:']'}
+  a.src-up{border-bottom:none;color:#4A5A68}
+  a.src-up::before{content:'[@后 '}
+  a.src-up::after{content:']'}
   /* 状态徽章在纸上没有颜色语义，改为方括号文字 */
   .status{border-width:1px;padding:1px 6px}
   .status::before{display:none}

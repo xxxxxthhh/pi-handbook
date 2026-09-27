@@ -48,6 +48,10 @@
       "claim": "AgentHarness 在锚定 SHA 上没有生产消费者",
       "command": "grep -rln 'AgentHarness' packages/*/src && grep -rn 'create-harness' packages/ --include='*.ts'",
       "result": "packages/coding-agent/src/server/create-harness.ts 构造它（L151），但该文件只被自己的测试 packages/coding-agent/test/server/create-harness.test.ts:20 引用；该测试只断言 getter（getTools / getActiveTools / getStreamOptions / getRetryPolicy / getSteeringMode / getFollowUpMode），从不调用 prompt()。packages/evals/src/pi-harness.ts 中的 'Harness' 是 evals 框架自己的同名类型，与 AgentHarness 无关；packages/protocol/src/schemas.ts 仅在注释中提及 AgentHarnessPhase。"
+    },
+    "after_anchor": {
+      "upstream_sha": "2b0a123de98318c2ff8069661721ce0c3794c34e",
+      "note": "徽章与 evidence 均按锚点 ac4ac9e 判定，未改。锚点之后上游已实现执行器的大部分方法（仅 watchSession 仍抛 SliceNotImplemented），默认 CLI 仍走 sdk.ts 的 new Agent；证据见 ch08 #after-anchor 与 drift.html #after-anchor（GATE 1b 核对）。"
     }
   },
   "ch19": {
@@ -59,7 +63,11 @@
         "expect": "docs(agent): reserve",
         "why": "认领协议只写在设计文档里，无 bot / workflow / 校验器实现；git log 中有 8 次 reserve/unreserve 提交为其真实使用的证据"
       }
-    ]
+    ],
+    "after_anchor": {
+      "upstream_sha": "2b0a123de98318c2ff8069661721ce0c3794c34e",
+      "note": "徽章与 evidence 均按锚点 ac4ac9e 判定，未改。锚点之后 harness-v2.md 已并入 harness.md、工作包重新编号；新规范中未找到 Reserved by 认领记录，协议去向未核实。见 ch19 追记 callout 与 ch08 #after-anchor。"
+    }
   },
   "ch04": {
     "status": "已发布",

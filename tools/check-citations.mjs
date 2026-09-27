@@ -11,6 +11,10 @@
  *     · 锚文本 "path:line" 与 URL 的 path/line 一致
  *     · 【实质】该行实际内容包含 data-expect 指定的子串（data-expect 必填）
  *
+ *   GATE 1b 锚点后追记可解析 —— HTML 中每个 <a class="src-up">：
+ *     · URL 的 sha == data/stats.json 的 after_anchor.upstream_sha（追记提交，不是锚定 SHA）
+ *     · 其余与 GATE 1 相同：文件存在、行号在范围内、锚文本一致、该行包含 data-expect
+ *
  *   GATE 2 实现状态可证 —— 每个带 .status 徽章的章节：
  *     · data/status.json 中有对应条目，且徽章文案与之一致
  *     · 条目里每条 evidence 的 path:line:expect 同样按 GATE 1 的方式解析
@@ -32,9 +36,16 @@ import { fileURLToPath } from "node:url";
 const BOOK = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const REPO = process.env.PI_REPO ?? join(BOOK, "repo");
 const PINNED = "ac4ac9eaf69f2b01ca3af984a5c48f3b99b84278";
+// 锚点之后的追记只引用这一个上游提交；它由 tools/stats.sh 写进 stats.json，这里不重复写死。
+const statsPath = join(BOOK, "data", "stats.json");
+const UPSTREAM = existsSync(statsPath)
+	? JSON.parse(readFileSync(statsPath, "utf8")).after_anchor?.upstream_sha
+	: undefined;
 
 const SRC_RE =
 	/<a\s+class="src"\s+href="https:\/\/github\.com\/earendil-works\/pi\/blob\/([0-9a-f]{40})\/([^"#]+)#L(\d+)"([^>]*)>([^<]+)<\/a>/g;
+const SRC_UP_RE =
+	/<a\s+class="src-up"\s+href="https:\/\/github\.com\/earendil-works\/pi\/blob\/([0-9a-f]{40})\/([^"#]+)#L(\d+)"([^>]*)>([^<]+)<\/a>/g;
 const STATUS_RE = /<span class="status (shipped|partial|paper)">([^<]+)<\/span>/g;
 const HREF_RE = /\shref="(?!https?:|mailto:|#)([^"]+)"/g;
 
@@ -46,23 +57,24 @@ const RELEASE = process.argv.includes("--release");
 
 const errors = [];
 const warnings = [];
-const counts = { citations: 0, status: 0, drift: 0, links: 0 };
+const counts = { citations: 0, upstream: 0, status: 0, drift: 0, links: 0 };
 
 const fileCache = new Map();
-function linesAt(path) {
-	if (!fileCache.has(path)) {
+function linesAt(path, sha = PINNED) {
+	const key = `${sha}:${path}`;
+	if (!fileCache.has(key)) {
 		try {
-			const blob = execFileSync("git", ["show", `${PINNED}:${path}`], {
+			const blob = execFileSync("git", ["show", `${sha}:${path}`], {
 				cwd: REPO,
 				encoding: "utf8",
 				maxBuffer: 64 * 1024 * 1024,
 			});
-			fileCache.set(path, blob.split("\n"));
+			fileCache.set(key, blob.split("\n"));
 		} catch {
-			fileCache.set(path, null);
+			fileCache.set(key, null);
 		}
 	}
-	return fileCache.get(path);
+	return fileCache.get(key);
 }
 
 const unescape = (s) =>
@@ -74,8 +86,8 @@ const unescape = (s) =>
 		.replaceAll("&amp;", "&");
 
 /** 共用的实质检查：<path> 在锚定 SHA 的第 <line> 行是否包含 <expect> */
-function verifyAnchor(where, path, line, expect) {
-	const lines = linesAt(path);
+function verifyAnchor(where, path, line, expect, sha = PINNED) {
+	const lines = linesAt(path, sha);
 	if (lines === null) return errors.push(`${where}: 该 SHA 下不存在文件 ${path}`);
 	if (line < 1 || line > lines.length)
 		return errors.push(`${where}: 行号 ${line} 越界（${path} 共 ${lines.length} 行）`);
@@ -134,6 +146,26 @@ for (const file of htmlFiles(BOOK)) {
 		if (anchorErr) errors.push(`${where}: ${anchorErr}`);
 		const expectMatch = attrs.match(/data-expect="([^"]*)"/);
 		verifyAnchor(where, path, line, expectMatch ? unescape(expectMatch[1]) : undefined);
+	}
+
+	// GATE 1b
+	for (const m of html.matchAll(SRC_UP_RE)) {
+		counts.upstream++;
+		const [, sha, path, lineStr, attrs, text] = m;
+		const line = Number(lineStr);
+		const where = `${rel} → ${path}:${line} @追记`;
+		if (!UPSTREAM) {
+			errors.push(`${where}: stats.json 缺 after_anchor.upstream_sha —— GATE 1b 无法执行`);
+			continue;
+		}
+		if (sha !== UPSTREAM) {
+			errors.push(`${where}: SHA ${sha.slice(0, 7)} ≠ 追记提交 ${UPSTREAM.slice(0, 7)}`);
+			continue;
+		}
+		const anchorErr = checkAnchorText(text.trim(), path, line);
+		if (anchorErr) errors.push(`${where}: ${anchorErr}`);
+		const expectMatch = attrs.match(/data-expect="([^"]*)"/);
+		verifyAnchor(where, path, line, expectMatch ? unescape(expectMatch[1]) : undefined, sha);
 	}
 
 	// GATE 2
@@ -240,5 +272,5 @@ if (errors.length > 0) {
 }
 console.log(
 	`✓ 站级校验通过 @ ${PINNED.slice(0, 7)}${RELEASE ? "（release 模式）" : ""}\n` +
-		`  引用 ${counts.citations} 条 · 状态徽章 ${counts.status} 个 · 自测 ${counts.quiz ?? 0} 道 · 漂移 ${counts.drift} 条 · 内部链接 ${counts.links} 个`,
+		`  引用 ${counts.citations} 条 · 追记引用 ${counts.upstream} 条 @${(UPSTREAM ?? "").slice(0, 7)} · 状态徽章 ${counts.status} 个 · 自测 ${counts.quiz ?? 0} 道 · 漂移 ${counts.drift} 条 · 内部链接 ${counts.links} 个`,
 );

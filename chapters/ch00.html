@@ -47,6 +47,7 @@
 
 <div class="callout">
   <p><b>一句话预告全书最重要的发现：</b>那份 3437 行的 durable harness 设计文档描述的执行器，在锚定版本上<b>有 22 个方法直接抛错</b>，且没有任何生产代码路径构造它。真正在跑的是另一个循环。判定过程见 <a href="ch08.html">第 08 章</a>。</p>
+  <div class="callout after"><p><span class="after-tag">锚点之后</span>这个发现只对锚点版本 <code>ac4ac9e</code> 成立。上游此后把大部分抛错方法实现了，但默认 CLI 仍然走 <code>new Agent</code>。本书没有换锚点，变化记在 <a href="ch08.html#after-anchor">第 08 章追记</a>。</p></div>
 </div>
 
 </section>

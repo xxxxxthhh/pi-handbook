@@ -7,7 +7,7 @@ set -uo pipefail
 
 cd "$(dirname "$0")/.."
 
-FILES=(chapters/ch03.html chapters/ch04.html data/status.json data/drift.json)
+FILES=(chapters/ch03.html chapters/ch04.html chapters/ch08.html data/status.json data/drift.json)
 TMP="$(mktemp -d)"
 for f in "${FILES[@]}"; do mkdir -p "$TMP/$(dirname "$f")"; cp "$f" "$TMP/$f"; done
 restore() { for f in "${FILES[@]}"; do cp "$TMP/$f" "$f"; done; rm -rf "$TMP"; }
@@ -42,6 +42,11 @@ expect_red "移除 data-expect"           chapters/ch03.html 's| data-expect="as
 expect_red "SHA 非锚定版本"             chapters/ch03.html 's|/blob/ac4ac9eaf69f2b01ca3af984a5c48f3b99b84278/packages/ai|/blob/0000000000000000000000000000000000000000/packages/ai|'
 expect_red "文件在该 SHA 下不存在"      chapters/ch03.html 's|packages/ai/src/utils/event-stream\.ts|packages/ai/src/utils/does-not-exist.ts|'
 
+echo
+echo "GATE 1b · 锚点后追记可解析"
+expect_red "追记引用行号 +5（306 → 311）" chapters/ch08.html 's|runtime/harness\.ts#L306|runtime/harness.ts#L311|'
+expect_red "追记引用改用锚定 SHA"        chapters/ch08.html 's|/blob/2b0a123de98318c2ff8069661721ce0c3794c34e/packages/coding-agent/src/core/sdk\.ts|/blob/ac4ac9eaf69f2b01ca3af984a5c48f3b99b84278/packages/coding-agent/src/core/sdk.ts|'
+expect_red "移除追记 data-expect"        chapters/ch08.html 's| data-expect="async resume("||'
 echo
 echo "GATE 2 · 实现状态可证"
 expect_red "status.json 证据行号漂移"   data/status.json   's|"line": 294|"line": 299|'
